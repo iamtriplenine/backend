@@ -147,5 +147,46 @@ app.post('/admin/refuser-depot', async (req, res) => {
 
 
 
+
+
+// --- RETRAIT UTILISATEUR ---
+app.post('/retrait', async (req, res) => {
+    const { id_public_user, montant, methode, numero } = req.body;
+    try {
+        // On vérifie d'abord si l'utilisateur a assez d'argent
+        const user = await pool.query('SELECT balance FROM utilisateurs WHERE id_public = $1', [id_public_user]);
+        if (user.rows[0].balance < montant) return res.status(400).json({ message: "Solde insuffisant" });
+
+        // On enregistre la demande (elle apparaîtra chez l'admin)
+        await pool.query(`INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`, 
+        [id_public_user, `RETRAIT-${methode}-${numero}`, montant, 'retrait en attente']);
+        
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ success: false }); }
+});
+
+// --- ADMIN : VALIDER RETRAIT ---
+app.post('/admin/valider-retrait', async (req, res) => {
+    const { cle, transaction_db_id, id_public_user, montant } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    try {
+        // On déduit l'argent du solde de l'utilisateur
+        await pool.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [montant, id_public_user]);
+        // On marque la transaction comme terminée
+        await pool.query("UPDATE transactions SET statut = 'retrait effectué' WHERE id = $1", [transaction_db_id]);
+        res.json({ success: true });
+    } catch (e) { res.status(500).send("Erreur"); }
+});
+
+
+
+
+
+
+
+
+
+
+
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log("🚀 Serveur prêt sur le port " + PORT));
