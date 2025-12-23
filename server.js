@@ -113,5 +113,24 @@ app.post('/admin/valider-depot', async (req, res) => {
     } catch (e) { res.status(500).send("Erreur validation"); }
 });
 
+
+
+// --- ADMIN : MODIFIER LE SOLDE MANUELLEMENT ---
+app.post('/admin/modifier-solde', async (req, res) => {
+    const { cle, id_public_user, nouveau_solde } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+
+    try {
+        await pool.query('UPDATE utilisateurs SET balance = $1 WHERE id_public = $2', [nouveau_solde, id_public_user]);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).send("Erreur lors de la modification");
+    }
+});
+
+
+
+
+
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log("🚀 Serveur prêt sur le port " + PORT));
