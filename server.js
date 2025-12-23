@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
@@ -11,7 +12,7 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-// 1. Création automatique de la table
+// Création de la table au démarrage
 pool.query(`
   CREATE TABLE IF NOT EXISTS utilisateurs (
     id SERIAL PRIMARY KEY,
@@ -23,20 +24,20 @@ pool.query(`
   else console.log("✅ Table prête !");
 });
 
-app.get('/', (req, res) => res.send("Serveur en ligne !"));
+app.get('/', (req, res) => res.send("Serveur actif !"));
 
-// 2. Inscription
+// --- INSCRIPTION ---
 app.post('/register', async (req, res) => {
   const { email, password } = req.body;
   try {
     await pool.query('INSERT INTO utilisateurs (email, password) VALUES ($1, $2)', [email, password]);
-    res.json({ success: true, message: "Compte créé avec succès !" });
+    res.json({ success: true, message: "Compte créé !" });
   } catch (err) {
-    res.status(500).json({ success: false, message: "Email déjà utilisé ou erreur." });
+    res.status(500).json({ success: false, message: "Erreur ou email déjà pris." });
   }
 });
 
-// 3. Connexion
+// --- CONNEXION ---
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
   try {
@@ -44,45 +45,40 @@ app.post('/login', async (req, res) => {
     if (user.rows.length > 0) {
       res.json({ success: true, message: "Connexion réussie !" });
     } else {
-      res.status(401).json({ success: false, message: "Identifiants incorrects." });
+      res.status(401).json({ success: false, message: "Identifiants faux." });
     }
   } catch (err) {
     res.status(500).json({ success: false, message: "Erreur serveur." });
   }
 });
 
-// 4. VOIR LES MEMBRES (SÉCURISÉ AVEC CLÉ 999)
+// --- VOIR LES MEMBRES (AVEC MOT DE PASSE 999) ---
 app.get('/admin/utilisateurs/:cle', async (req, res) => {
   const { cle } = req.params;
-  
-  // Vérification du "mot de passe"
   if (cle !== "999") {
-    return res.status(403).send("Accès refusé : Mauvaise clé !");
+    return res.status(403).send("Accès interdit : Mauvaise clé !");
   }
-
   try {
     const users = await pool.query('SELECT id, email FROM utilisateurs ORDER BY id ASC');
     res.json(users.rows);
   } catch (err) {
-    res.status(500).send("Erreur lors de la récupération des données");
+    res.status(500).send("Erreur récupération");
   }
 });
 
-// 5. SUPPRIMER UN MEMBRE (SÉCURISÉ AVEC CLÉ 999)
+// --- SUPPRIMER UN MEMBRE (AVEC MOT DE PASSE 999) ---
 app.delete('/admin/utilisateurs/:id/:cle', async (req, res) => {
   const { id, cle } = req.params;
-
   if (cle !== "999") {
-    return res.status(403).send("Accès refusé !");
+    return res.status(403).send("Interdit");
   }
-
   try {
     await pool.query('DELETE FROM utilisateurs WHERE id = $1', [id]);
-    res.json({ success: true, message: "Utilisateur supprimé !" });
+    res.json({ success: true, message: "Supprimé !" });
   } catch (err) {
-    res.status(500).send("Erreur lors de la suppression");
+    res.status(500).send("Erreur suppression");
   }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Serveur sur port ${PORT}`));
+app.listen(PORT, () => console.log(`Serveur prêt sur port ${PORT}`));
