@@ -11,7 +11,7 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-// Création automatique de la table
+// 1. Création automatique de la table
 pool.query(`
   CREATE TABLE IF NOT EXISTS utilisateurs (
     id SERIAL PRIMARY KEY,
@@ -25,7 +25,7 @@ pool.query(`
 
 app.get('/', (req, res) => res.send("Serveur en ligne !"));
 
-// Inscription
+// 2. Inscription
 app.post('/register', async (req, res) => {
   const { email, password } = req.body;
   try {
@@ -36,7 +36,7 @@ app.post('/register', async (req, res) => {
   }
 });
 
-// Connexion
+// 3. Connexion
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
   try {
@@ -51,48 +51,38 @@ app.post('/login', async (req, res) => {
   }
 });
 
+// 4. VOIR LES MEMBRES (SÉCURISÉ AVEC CLÉ 999)
+app.get('/admin/utilisateurs/:cle', async (req, res) => {
+  const { cle } = req.params;
+  
+  // Vérification du "mot de passe"
+  if (cle !== "999") {
+    return res.status(403).send("Accès refusé : Mauvaise clé !");
+  }
 
-// --- VOIR TOUS LES MEMBRES ---
-app.get('/admin/utilisateurs', async (req, res) => {
   try {
-    const users = await pool.query('SELECT id, email FROM utilisateurs ORDER BY id DESC');
+    const users = await pool.query('SELECT id, email FROM utilisateurs ORDER BY id ASC');
     res.json(users.rows);
   } catch (err) {
     res.status(500).send("Erreur lors de la récupération des données");
   }
+});
 
+// 5. SUPPRIMER UN MEMBRE (SÉCURISÉ AVEC CLÉ 999)
+app.delete('/admin/utilisateurs/:id/:cle', async (req, res) => {
+  const { id, cle } = req.params;
 
-// On ajoute un paramètre "cle"
-app.get('/admin/utilisateurs/:cle', async (req, res) => {
-  const { cle } = req.params;
-  
-  // Tu choisis ton mot de passe ici (ex: "monCode123")
   if (cle !== "999") {
     return res.status(403).send("Accès refusé !");
   }
 
-  const users = await pool.query('SELECT id, email FROM utilisateurs ORDER BY id ASC');
-  res.json(users.rows);
+  try {
+    await pool.query('DELETE FROM utilisateurs WHERE id = $1', [id]);
+    res.json({ success: true, message: "Utilisateur supprimé !" });
+  } catch (err) {
+    res.status(500).send("Erreur lors de la suppression");
+  }
 });
-
-
-
-
-
-
-
-  
-
-  
-});
-
-
-
-
-
-
-
-
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Serveur sur port ${PORT}`));
