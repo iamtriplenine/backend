@@ -51,5 +51,24 @@ app.post('/login', async (req, res) => {
   }
 });
 
+
+// --- VOIR TOUS LES MEMBRES ---
+app.get('/admin/utilisateurs', async (req, res) => {
+  try {
+    const users = await pool.query('SELECT id, email FROM utilisateurs ORDER BY id DESC');
+    res.json(users.rows);
+  } catch (err) {
+    res.status(500).send("Erreur lors de la récupération des données");
+  }
+});
+
+
+
+
+
+
+
+
+
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Serveur sur port ${PORT}`));
