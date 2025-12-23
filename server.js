@@ -11,15 +11,12 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-// --- INITIALISATION PROPRE DES TABLES ---
+// --- INITIALISATION DES TABLES ---
 const initDB = async () => {
     try {
-        // On supprime les anciennes tables pour éviter le bug "Numéro déjà utilisé"
-        // ATTENTION : Cela efface les anciens tests.
-        await pool.query(`DROP TABLE IF EXISTS transactions; DROP TABLE IF EXISTS utilisateurs;`);
-        
+        // Note : On retire le DROP TABLE pour conserver les inscrits
         await pool.query(`
-            CREATE TABLE utilisateurs (
+            CREATE TABLE IF NOT EXISTS utilisateurs (
                 id SERIAL PRIMARY KEY,
                 id_public VARCHAR(6) UNIQUE,
                 telephone VARCHAR(20) UNIQUE NOT NULL,
@@ -29,7 +26,7 @@ const initDB = async () => {
                 parrain_code VARCHAR(4),
                 balance DECIMAL(15,2) DEFAULT 0
             );
-            CREATE TABLE transactions (
+            CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
                 id_public_user VARCHAR(6),
                 transaction_id TEXT UNIQUE,
@@ -37,7 +34,7 @@ const initDB = async () => {
                 statut TEXT DEFAULT 'en attente'
             );
         `);
-        console.log("✅ Base de données remise à neuf !");
+        console.log("✅ Base de données opérationnelle");
     } catch (err) { console.log("Erreur init:", err); }
 };
 initDB();
@@ -57,15 +54,31 @@ app.post('/register', async (req, res) => {
             [id_p, telephone, password, username, mon_p, promo_parrain]
         );
         res.json({ success: true, id: id_p, promo: mon_p });
-    } catch (e) { res.status(500).json({ success: false, message: "Erreur : Numéro ou Pseudo déjà pris." }); }
+    } catch (e) { res.status(500).json({ success: false, message: "Numéro déjà pris." }); }
 });
 
 // --- CONNEXION ---
 app.post('/login', async (req, res) => {
     const { telephone, password } = req.body;
-    const u = await pool.query('SELECT * FROM utilisateurs WHERE telephone = $1 AND password = $2', [telephone, password]);
-    if (u.rows.length > 0) res.json({ success: true, user: u.rows[0] });
-    else res.status(401).json({ success: false, message: "Identifiants incorrects" });
+    try {
+        const u = await pool.query('SELECT * FROM utilisateurs WHERE telephone = $1 AND password = $2', [telephone, password]);
+        if (u.rows.length > 0) res.json({ success: true, user: u.rows[0] });
+        else res.status(401).json({ success: false, message: "Identifiants incorrects" });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+// --- UTILISATEUR : ENVOYER UNE PREUVE DE DEPOT (LA MISE À JOUR) ---
+app.post('/depot', async (req, res) => {
+    const { id_public_user, transaction_id, montant } = req.body;
+    try {
+        await pool.query(
+            `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, 'en attente')`,
+            [id_public_user, transaction_id, montant]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: "ID transaction déjà utilisé." });
+    }
 });
 
 // --- ADMIN : VOIR TOUT ---
@@ -87,24 +100,18 @@ app.post('/admin/valider-depot', async (req, res) => {
     if(cle !== "999") return res.status(403).send("Refusé");
 
     try {
-        // 1. Ajouter l'argent à l'utilisateur
         await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [montant, id_public_user]);
-        
-        // 2. Chercher le parrain
         const user = await pool.query('SELECT parrain_code FROM utilisateurs WHERE id_public = $1', [id_public_user]);
         const codeParrain = user.rows[0]?.parrain_code;
 
         if (codeParrain) {
-            const commission = montant * 0.40; // CALCUL DES 40%
+            const commission = montant * 0.40;
             await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE code_promo = $2', [commission, codeParrain]);
         }
-
-        // 3. Marquer la transaction comme validée
         await pool.query("UPDATE transactions SET statut = 'validé' WHERE id = $1", [transaction_db_id]);
-        
         res.json({ success: true });
     } catch (e) { res.status(500).send("Erreur validation"); }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log("Ready"));
+app.listen(PORT, () => console.log("🚀 Serveur prêt sur le port " + PORT));
