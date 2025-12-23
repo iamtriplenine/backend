@@ -60,6 +60,23 @@ app.get('/admin/utilisateurs', async (req, res) => {
   } catch (err) {
     res.status(500).send("Erreur lors de la récupération des données");
   }
+
+
+
+// Route pour supprimer un utilisateur par son ID
+app.delete('/admin/utilisateurs/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.query('DELETE FROM utilisateurs WHERE id = $1', [id]);
+    res.json({ success: true, message: "Utilisateur supprimé !" });
+  } catch (err) {
+    res.status(500).send("Erreur lors de la suppression");
+  }
+});
+
+  
+
+  
 });
 
 
