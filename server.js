@@ -11,7 +11,7 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-// --- ÉTAPE MAGIQUE : CRÉATION DE LA TABLE AUTOMATIQUE ---
+// Création automatique de la table
 pool.query(`
   CREATE TABLE IF NOT EXISTS utilisateurs (
     id SERIAL PRIMARY KEY,
@@ -19,60 +19,37 @@ pool.query(`
     password TEXT NOT NULL
   );
 `, (err, res) => {
-  if (err) console.log("Erreur lors de la création de la table:", err);
-  else console.log("✅ L'étagère 'utilisateurs' est prête dans la base !");
+  if (err) console.log("Erreur table:", err);
+  else console.log("✅ Table prête !");
 });
 
-app.get('/', (req, res) => res.send("Serveur actif et connecté à Postgres !"));
+app.get('/', (req, res) => res.send("Serveur en ligne !"));
 
-
-// --- ROUTE POUR S'INSCRIRE ---
+// Inscription
 app.post('/register', async (req, res) => {
   const { email, password } = req.body;
   try {
-    // On insère l'email et le mot de passe dans l'étagère "utilisateurs"
-    const result = await pool.query(
-      'INSERT INTO utilisateurs (email, password) VALUES ($1, $2) RETURNING *',
-      [email, password]
-    );
+    await pool.query('INSERT INTO utilisateurs (email, password) VALUES ($1, $2)', [email, password]);
     res.json({ success: true, message: "Compte créé avec succès !" });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: "L'email existe déjà ou erreur base." });
+    res.status(500).json({ success: false, message: "Email déjà utilisé ou erreur." });
   }
 });
 
-
-
-
-
-
-
-
-
-
-// --- ROUTE POUR SE CONNECTER ---
+// Connexion
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
   try {
-    // On demande à la base : "Est-ce que cet email et ce mot de passe existent ?"
-    const user = await pool.query(
-      'SELECT * FROM utilisateurs WHERE email = $1 AND password = $2',
-      [email, password]
-    );
-
+    const user = await pool.query('SELECT * FROM utilisateurs WHERE email = $1 AND password = $2', [email, password]);
     if (user.rows.length > 0) {
       res.json({ success: true, message: "Connexion réussie !" });
     } else {
       res.status(401).json({ success: false, message: "Identifiants incorrects." });
     }
   } catch (err) {
-    res.status(500).send("Erreur serveur");
+    res.status(500).json({ success: false, message: "Erreur serveur." });
   }
 });
 
-
-
-
-
-
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`Serveur sur port ${PORT}`));
