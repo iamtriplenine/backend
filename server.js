@@ -150,20 +150,26 @@ app.post('/admin/refuser-depot', async (req, res) => {
 
 
 // --- RETRAIT UTILISATEUR ---
+// --- RETRAIT UTILISATEUR (MINIMUM 100 FCFA) ---
 app.post('/retrait', async (req, res) => {
     const { id_public_user, montant, methode, numero } = req.body;
     try {
-        // On vérifie d'abord si l'utilisateur a assez d'argent
+        // CHANGEMENT ICI : Seuil à 100 au lieu de 1000
+        if (montant < 100) return res.status(400).json({ message: "Le minimum est de 100 FCFA" });
+
         const user = await pool.query('SELECT balance FROM utilisateurs WHERE id_public = $1', [id_public_user]);
         if (user.rows[0].balance < montant) return res.status(400).json({ message: "Solde insuffisant" });
 
-        // On enregistre la demande (elle apparaîtra chez l'admin)
         await pool.query(`INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`, 
         [id_public_user, `RETRAIT-${methode}-${numero}`, montant, 'retrait en attente']);
         
         res.json({ success: true });
     } catch (err) { res.status(500).json({ success: false }); }
 });
+
+
+
+
 
 // --- ADMIN : VALIDER RETRAIT ---
 app.post('/admin/valider-retrait', async (req, res) => {
