@@ -62,17 +62,24 @@ app.get('/admin/utilisateurs', async (req, res) => {
   }
 
 
-
-// Route pour supprimer un utilisateur par son ID
-app.delete('/admin/utilisateurs/:id', async (req, res) => {
-  const { id } = req.params;
-  try {
-    await pool.query('DELETE FROM utilisateurs WHERE id = $1', [id]);
-    res.json({ success: true, message: "Utilisateur supprimé !" });
-  } catch (err) {
-    res.status(500).send("Erreur lors de la suppression");
+// On ajoute un paramètre "cle"
+app.get('/admin/utilisateurs/:cle', async (req, res) => {
+  const { cle } = req.params;
+  
+  // Tu choisis ton mot de passe ici (ex: "monCode123")
+  if (cle !== "999") {
+    return res.status(403).send("Accès refusé !");
   }
+
+  const users = await pool.query('SELECT id, email FROM utilisateurs ORDER BY id ASC');
+  res.json(users.rows);
 });
+
+
+
+
+
+
 
   
 
