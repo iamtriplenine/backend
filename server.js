@@ -132,5 +132,20 @@ app.post('/admin/modifier-solde', async (req, res) => {
 
 
 
+// --- ADMIN : REFUSER UN DÉPÔT ---
+app.post('/admin/refuser-depot', async (req, res) => {
+    const { cle, transaction_db_id } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    try {
+        // On supprime simplement la transaction de la liste d'attente
+        await pool.query("DELETE FROM transactions WHERE id = $1", [transaction_db_id]);
+        res.json({ success: true });
+    } catch (e) { res.status(500).send("Erreur"); }
+});
+
+
+
+
+
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log("🚀 Serveur prêt sur le port " + PORT));
