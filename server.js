@@ -2,8 +2,8 @@
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
-
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
@@ -12,73 +12,65 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-// Création de la table au démarrage
+// INITIALISATION DES TABLES (Utilisateurs et Transactions)
 pool.query(`
   CREATE TABLE IF NOT EXISTS utilisateurs (
     id SERIAL PRIMARY KEY,
-    email TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL
+    id_public VARCHAR(6) UNIQUE,
+    telephone VARCHAR(20) UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    username TEXT,
+    code_promo VARCHAR(4) UNIQUE,
+    parrain_code VARCHAR(4),
+    balance DECIMAL(10,2) DEFAULT 0
   );
-`, (err, res) => {
-  if (err) console.log("Erreur table:", err);
-  else console.log("✅ Table prête !");
-});
+  
+  CREATE TABLE IF NOT EXISTS transactions (
+    id SERIAL PRIMARY KEY,
+    id_public_user VARCHAR(6),
+    transaction_id TEXT UNIQUE,
+    montant DECIMAL(10,2),
+    statut TEXT DEFAULT 'en attente'
+  );
+`);
 
-app.get('/', (req, res) => res.send("Serveur actif !"));
+// FONCTION POUR GÉNÉRER LES CODES ALÉATOIRES
+const genererCode = (longueur) => {
+    return Math.floor(Math.pow(10, longueur-1) + Math.random() * 9 * Math.pow(10, longueur-1)).toString();
+};
 
-// --- INSCRIPTION ---
+// --- INSCRIPTION AVEC TÉLÉPHONE ---
 app.post('/register', async (req, res) => {
-  const { email, password } = req.body;
-  try {
-    await pool.query('INSERT INTO utilisateurs (email, password) VALUES ($1, $2)', [email, password]);
-    res.json({ success: true, message: "Compte créé !" });
-  } catch (err) {
-    res.status(500).json({ success: false, message: "Erreur ou email déjà pris." });
-  }
-});
+    const { telephone, password, username, promo_parrain } = req.body;
+    const id_public = genererCode(6);
+    const mon_promo = genererCode(4);
 
-// --- CONNEXION ---
-app.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-  try {
-    const user = await pool.query('SELECT * FROM utilisateurs WHERE email = $1 AND password = $2', [email, password]);
-    if (user.rows.length > 0) {
-      res.json({ success: true, message: "Connexion réussie !" });
-    } else {
-      res.status(401).json({ success: false, message: "Identifiants faux." });
+    try {
+        await pool.query(
+            `INSERT INTO utilisateurs (id_public, telephone, password, username, code_promo, parrain_code) 
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [id_public, telephone, password, username, mon_promo, promo_parrain]
+        );
+        res.json({ success: true, id: id_public, promo: mon_promo });
+    } catch (err) {
+        res.status(500).json({ success: false, message: "Numéro déjà utilisé." });
     }
-  } catch (err) {
-    res.status(500).json({ success: false, message: "Erreur serveur." });
-  }
 });
 
-// --- VOIR LES MEMBRES (AVEC MOT DE PASSE 999) ---
-app.get('/admin/utilisateurs/:cle', async (req, res) => {
-  const { cle } = req.params;
-  if (cle !== "999") {
-    return res.status(403).send("Accès interdit : Mauvaise clé !");
-  }
-  try {
-    const users = await pool.query('SELECT id, email FROM utilisateurs ORDER BY id ASC');
-    res.json(users.rows);
-  } catch (err) {
-    res.status(500).send("Erreur récupération");
-  }
-});
-
-// --- SUPPRIMER UN MEMBRE (AVEC MOT DE PASSE 999) ---
-app.delete('/admin/utilisateurs/:id/:cle', async (req, res) => {
-  const { id, cle } = req.params;
-  if (cle !== "999") {
-    return res.status(403).send("Interdit");
-  }
-  try {
-    await pool.query('DELETE FROM utilisateurs WHERE id = $1', [id]);
-    res.json({ success: true, message: "Supprimé !" });
-  } catch (err) {
-    res.status(500).send("Erreur suppression");
-  }
+// --- CONNEXION AVEC TÉLÉPHONE ---
+app.post('/login', async (req, res) => {
+    const { telephone, password } = req.body;
+    try {
+        const user = await pool.query('SELECT * FROM utilisateurs WHERE telephone = $1 AND password = $2', [telephone, password]);
+        if (user.rows.length > 0) {
+            res.json({ success: true, user: user.rows[0] });
+        } else {
+            res.status(401).json({ success: false, message: "Identifiants incorrects." });
+        }
+    } catch (err) {
+        res.status(500).json({ success: false });
+    }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Serveur prêt sur port ${PORT}`));
+app.listen(PORT, () => console.log("Serveur Affiliation Prêt"));
