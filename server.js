@@ -24,7 +24,8 @@ const initDB = async () => {
                 code_promo VARCHAR(4) UNIQUE,
                 parrain_code VARCHAR(4),
                 balance DECIMAL(15,2) DEFAULT 0,
-                message TEXT DEFAULT '' 
+                message TEXT DEFAULT '',
+                dernier_checkin TEXT DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
@@ -34,16 +35,25 @@ const initDB = async () => {
                 statut TEXT DEFAULT 'en attente',
                 date_crea TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS config_globale (
+                cle TEXT PRIMARY KEY,
+                valeur TEXT,
+                montant DECIMAL(15,2)
+            );
         `);
+        // Sécurité colonnes et config par défaut
         await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS message TEXT DEFAULT '';`);
-        console.log("✅ Base de données opérationnelle");
+        await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS dernier_checkin TEXT DEFAULT '';`);
+        await pool.query(`INSERT INTO config_globale (cle, valeur, montant) VALUES ('code_journalier', 'MEGA2025', 50) ON CONFLICT DO NOTHING;`);
+        
+        console.log("✅ Base de données mise à jour et opérationnelle");
     } catch (err) { console.log("Erreur init:", err); }
 };
 initDB();
 
 const genererCode = (long) => Math.floor(Math.pow(10, long-1) + Math.random() * 9 * Math.pow(10, long-1)).toString();
 
-// --- ROUTES ---
+// --- ROUTES UTILISATEURS ---
 
 app.post('/register', async (req, res) => {
     const { telephone, password, username, promo_parrain } = req.body;
@@ -67,17 +77,60 @@ app.post('/login', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// === ROUTE RETRAIT SÉCURISÉE SANS BUG ===
+// === SYSTÈME DE CODE BONUS JOURNALIER ===
+app.post('/reclamer-bonus', async (req, res) => {
+    const { id_public_user, code_saisi } = req.body;
+    try {
+        const config = await pool.query("SELECT * FROM config_globale WHERE cle = 'code_journalier'");
+        const user = await pool.query("SELECT dernier_checkin FROM utilisateurs WHERE id_public = $1", [id_public_user]);
+        const aujourdhui = new Date().toDateString();
+
+        if (user.rows[0].dernier_checkin === aujourdhui) {
+            return res.status(400).json({ message: "Bonus déjà récupéré aujourd'hui !" });
+        }
+        if (code_saisi !== config.rows[0].valeur) {
+            return res.status(400).json({ message: "Code incorrect. Allez sur Telegram !" });
+        }
+
+        const montantBonus = config.rows[0].montant;
+        await pool.query("UPDATE utilisateurs SET balance = balance + $1, dernier_checkin = $2 WHERE id_public = $3", 
+            [montantBonus, aujourdhui, id_public_user]);
+
+        res.json({ success: true, message: `Félicitations ! +${montantBonus} FCFA ajoutés.` });
+    } catch (e) { res.status(500).json({ message: "Erreur serveur" }); }
+});
+
+// === MINI-JEU PILE OU FACE ===
+app.post('/jeu/pile-face', async (req, res) => {
+    const { id_public_user, mise } = req.body;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const user = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
+        if (parseFloat(user.rows[0].balance) < mise || mise < 50) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ message: "Solde insuffisant (min 50F)" });
+        }
+
+        const gagne = Math.random() > 0.5;
+        const gain = gagne ? mise : -mise;
+        await client.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [gain, id_public_user]);
+        
+        await client.query('COMMIT');
+        res.json({ success: true, gagne, nouveauSolde: parseFloat(user.rows[0].balance) + gain });
+    } catch (e) {
+        await client.query('ROLLBACK');
+        res.status(500).json({ message: "Erreur jeu" });
+    } finally { client.release(); }
+});
+
+// === ROUTE RETRAIT SÉCURISÉE ===
 app.post('/retrait', async (req, res) => {
     const { id_public_user, montant, methode, numero } = req.body;
-    const client = await pool.connect(); // On ouvre une connexion dédiée
-    
+    const client = await pool.connect();
     try {
         if (montant < 100) return res.status(400).json({ message: "Minimum 100 FCFA" });
-
-        await client.query('BEGIN'); // DÉBUT DE LA TRANSACTION
-
-        // 1. On vérifie le solde en verrouillant la ligne (FOR UPDATE)
+        await client.query('BEGIN');
         const userRes = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
         const currentBalance = parseFloat(userRes.rows[0].balance);
 
@@ -86,26 +139,18 @@ app.post('/retrait', async (req, res) => {
             return res.status(400).json({ message: "Solde insuffisant" });
         }
 
-        // 2. On débite
         await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [montant, id_public_user]);
-
-        // 3. On crée la transaction avec un ID unique pour éviter les conflits
         const uniqueId = `RET-${Date.now()}-${genererCode(3)}`;
         await client.query(
             `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, 'retrait en attente')`,
             [id_public_user, `${uniqueId}-${methode}-${numero}`, montant]
         );
-
-        await client.query('COMMIT'); // ON VALIDE TOUT
+        await client.query('COMMIT');
         res.json({ success: true });
-
     } catch (err) {
-        await client.query('ROLLBACK'); // EN CAS D'ERREUR ON ANNULE TOUT (L'argent n'est pas perdu)
-        console.error(err);
-        res.status(500).json({ success: false, message: "Erreur serveur, réessayez." });
-    } finally {
-        client.release(); // On libère la connexion
-    }
+        await client.query('ROLLBACK');
+        res.status(500).json({ success: false, message: "Erreur serveur" });
+    } finally { client.release(); }
 });
 
 app.post('/depot', async (req, res) => {
@@ -124,6 +169,14 @@ app.get('/user/transactions/:id_public', async (req, res) => {
 
 // --- ROUTES ADMIN ---
 
+app.post('/admin/update-bonus-code', async (req, res) => {
+    const { cle, nouveau_code, nouveau_montant } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    await pool.query("UPDATE config_globale SET valeur = $1, montant = $2 WHERE cle = 'code_journalier'", 
+        [nouveau_code, nouveau_montant]);
+    res.json({ success: true });
+});
+
 app.get('/admin/utilisateurs/:cle', async (req,res) => {
     if(req.params.cle !== "999") return res.status(403).send("Refusé");
     const r = await pool.query('SELECT * FROM utilisateurs ORDER BY id DESC');
@@ -134,13 +187,6 @@ app.get('/admin/transactions/:cle', async (req,res) => {
     if(req.params.cle !== "999") return res.status(403).send("Refusé");
     const r = await pool.query("SELECT * FROM transactions WHERE statut = 'en attente' OR statut = 'retrait en attente' ORDER BY id DESC");
     res.json(r.rows);
-});
-
-app.post('/admin/modifier-message', async (req, res) => {
-    const { cle, id_public_user, nouveau_message } = req.body;
-    if(cle !== "999") return res.status(403).send("Refusé");
-    await pool.query('UPDATE utilisateurs SET message = $1 WHERE id_public = $2', [nouveau_message, id_public_user]);
-    res.json({ success: true });
 });
 
 app.post('/admin/valider-depot', async (req, res) => {
@@ -175,19 +221,5 @@ app.post('/admin/refuser-depot', async (req, res) => {
     res.json({ success: true });
 });
 
-app.post('/admin/modifier-solde', async (req, res) => {
-    const { cle, id_public_user, nouveau_solde } = req.body;
-    if(cle !== "999") return res.status(403).send("Refusé");
-    await pool.query('UPDATE utilisateurs SET balance = $1 WHERE id_public = $2', [nouveau_solde, id_public_user]);
-    res.json({ success: true });
-});
-
-app.post('/admin/supprimer-user', async (req, res) => {
-    const { cle, id_public_user } = req.body;
-    if(cle !== "999") return res.status(403).send("Refusé");
-    await pool.query('DELETE FROM utilisateurs WHERE id_public = $1', [id_public_user]);
-    res.json({ success: true });
-});
-
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log("🚀 Serveur Connecté"));
+app.listen(PORT, () => console.log("🚀 Serveur Connecté sur port " + PORT));
