@@ -6,12 +6,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// --- CONNEXION À LA BASE DE DONNÉES ---
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// --- INITIALISATION DES TABLES ---
+// --- INITIALISATION DES TABLES ET CONFIGURATION ---
 const initDB = async () => {
     try {
         await pool.query(`
@@ -25,7 +26,7 @@ const initDB = async () => {
                 parrain_code VARCHAR(4),
                 balance DECIMAL(15,2) DEFAULT 0,
                 message TEXT DEFAULT '',
-                dernier_checkin TEXT DEFAULT ''
+                dernier_code_utilise TEXT DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
@@ -41,19 +42,23 @@ const initDB = async () => {
                 montant DECIMAL(15,2)
             );
         `);
-        // Sécurité colonnes et config par défaut
-        await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS message TEXT DEFAULT '';`);
-        await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS dernier_checkin TEXT DEFAULT '';`);
+
+        // Mise à jour de la colonne pour la nouvelle logique (Code Unique au lieu de Date)
+        await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS dernier_code_utilise TEXT DEFAULT '';`);
+        // Initialisation du code par défaut si la table est vide
         await pool.query(`INSERT INTO config_globale (cle, valeur, montant) VALUES ('code_journalier', 'MEGA2025', 50) ON CONFLICT DO NOTHING;`);
         
-        console.log("✅ Base de données mise à jour et opérationnelle");
-    } catch (err) { console.log("Erreur init:", err); }
+        console.log("✅ Serveur prêt et Base de données synchronisée");
+    } catch (err) { console.log("Erreur lors de l'initialisation:", err); }
 };
 initDB();
 
+// --- PETIT OUTIL POUR GÉNÉRER DES CODES (ID PUBLIC, ETC.) ---
 const genererCode = (long) => Math.floor(Math.pow(10, long-1) + Math.random() * 9 * Math.pow(10, long-1)).toString();
 
-// --- ROUTES UTILISATEURS ---
+// ---------------------------------------------------------
+// --- SECTION : INSCRIPTION ET CONNEXION ---
+// ---------------------------------------------------------
 
 app.post('/register', async (req, res) => {
     const { telephone, password, username, promo_parrain } = req.body;
@@ -77,30 +82,44 @@ app.post('/login', async (req, res) => {
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// === SYSTÈME DE CODE BONUS JOURNALIER ===
+// ---------------------------------------------------------
+// --- SECTION : SYSTÈME DE CODE CADEAU (LOGIQUE CODE UNIQUE) ---
+// ---------------------------------------------------------
+
 app.post('/reclamer-bonus', async (req, res) => {
     const { id_public_user, code_saisi } = req.body;
     try {
+        // 1. Récupérer le code actuellement défini par l'admin
         const config = await pool.query("SELECT * FROM config_globale WHERE cle = 'code_journalier'");
-        const user = await pool.query("SELECT dernier_checkin FROM utilisateurs WHERE id_public = $1", [id_public_user]);
-        const aujourdhui = new Date().toDateString();
-
-        if (user.rows[0].dernier_checkin === aujourdhui) {
-            return res.status(400).json({ message: "Bonus déjà récupéré aujourd'hui !" });
-        }
-        if (code_saisi !== config.rows[0].valeur) {
-            return res.status(400).json({ message: "Code incorrect. Allez sur Telegram !" });
-        }
-
+        const codeActuel = config.rows[0].valeur;
         const montantBonus = config.rows[0].montant;
-        await pool.query("UPDATE utilisateurs SET balance = balance + $1, dernier_checkin = $2 WHERE id_public = $3", 
-            [montantBonus, aujourdhui, id_public_user]);
+
+        // 2. Vérifier ce que l'utilisateur a utilisé en dernier
+        const user = await pool.query("SELECT dernier_code_utilise FROM utilisateurs WHERE id_public = $1", [id_public_user]);
+
+        // Vérification 1: Est-ce le bon code ?
+        if (code_saisi !== codeActuel) {
+            return res.status(400).json({ message: "Code incorrect ou expiré !" });
+        }
+
+        // Vérification 2: L'a-t-il déjà utilisé ? 
+        // Si le code saisi est égal au dernier_code_utilise, on bloque.
+        if (user.rows[0].dernier_code_utilise === codeActuel) {
+            return res.status(400).json({ message: "Vous avez déjà récupéré ce cadeau !" });
+        }
+
+        // 3. Validation : On donne l'argent et on enregistre ce code comme étant le "dernier utilisé"
+        await pool.query("UPDATE utilisateurs SET balance = balance + $1, dernier_code_utilise = $2 WHERE id_public = $3", 
+            [montantBonus, codeActuel, id_public_user]);
 
         res.json({ success: true, message: `Félicitations ! +${montantBonus} FCFA ajoutés.` });
     } catch (e) { res.status(500).json({ message: "Erreur serveur" }); }
 });
 
-// === MINI-JEU PILE OU FACE ===
+// ---------------------------------------------------------
+// --- SECTION : JEU PILE OU FACE ---
+// ---------------------------------------------------------
+
 app.post('/jeu/pile-face', async (req, res) => {
     const { id_public_user, mise } = req.body;
     const client = await pool.connect();
@@ -112,7 +131,7 @@ app.post('/jeu/pile-face', async (req, res) => {
             return res.status(400).json({ message: "Solde insuffisant (min 50F)" });
         }
 
-        const gagne = Math.random() > 0.5;
+        const gagne = Math.random() > 0.5; // 50% de chance
         const gain = gagne ? mise : -mise;
         await client.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [gain, id_public_user]);
         
@@ -124,7 +143,10 @@ app.post('/jeu/pile-face', async (req, res) => {
     } finally { client.release(); }
 });
 
-// === ROUTE RETRAIT SÉCURISÉE ===
+// ---------------------------------------------------------
+// --- SECTION : DÉPÔTS ET RETRAITS ---
+// ---------------------------------------------------------
+
 app.post('/retrait', async (req, res) => {
     const { id_public_user, montant, methode, numero } = req.body;
     const client = await pool.connect();
@@ -132,15 +154,14 @@ app.post('/retrait', async (req, res) => {
         if (montant < 100) return res.status(400).json({ message: "Minimum 100 FCFA" });
         await client.query('BEGIN');
         const userRes = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
-        const currentBalance = parseFloat(userRes.rows[0].balance);
-
-        if (currentBalance < montant) {
+        
+        if (parseFloat(userRes.rows[0].balance) < montant) {
             await client.query('ROLLBACK');
             return res.status(400).json({ message: "Solde insuffisant" });
         }
 
         await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [montant, id_public_user]);
-        const uniqueId = `RET-${Date.now()}-${genererCode(3)}`;
+        const uniqueId = `RET-${Date.now()}`;
         await client.query(
             `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, 'retrait en attente')`,
             [id_public_user, `${uniqueId}-${methode}-${numero}`, montant]
@@ -149,7 +170,7 @@ app.post('/retrait', async (req, res) => {
         res.json({ success: true });
     } catch (err) {
         await client.query('ROLLBACK');
-        res.status(500).json({ success: false, message: "Erreur serveur" });
+        res.status(500).json({ success: false });
     } finally { client.release(); }
 });
 
@@ -167,8 +188,11 @@ app.get('/user/transactions/:id_public', async (req, res) => {
     res.json(r.rows);
 });
 
-// --- ROUTES ADMIN ---
+// ---------------------------------------------------------
+// --- SECTION : ADMINISTRATION ---
+// ---------------------------------------------------------
 
+// Met à jour le code secret et le montant. Dès que tu valides, l'ancien code ne fonctionne plus.
 app.post('/admin/update-bonus-code', async (req, res) => {
     const { cle, nouveau_code, nouveau_montant } = req.body;
     if(cle !== "999") return res.status(403).send("Refusé");
@@ -177,18 +201,21 @@ app.post('/admin/update-bonus-code', async (req, res) => {
     res.json({ success: true });
 });
 
+// Liste tous les membres
 app.get('/admin/utilisateurs/:cle', async (req,res) => {
     if(req.params.cle !== "999") return res.status(403).send("Refusé");
     const r = await pool.query('SELECT * FROM utilisateurs ORDER BY id DESC');
     res.json(r.rows);
 });
 
+// Liste les transactions en attente
 app.get('/admin/transactions/:cle', async (req,res) => {
     if(req.params.cle !== "999") return res.status(403).send("Refusé");
     const r = await pool.query("SELECT * FROM transactions WHERE statut = 'en attente' OR statut = 'retrait en attente' ORDER BY id DESC");
     res.json(r.rows);
 });
 
+// Valider un dépôt (Ajoute l'argent au client + Bonus Parrain 40%)
 app.post('/admin/valider-depot', async (req, res) => {
     const { cle, transaction_db_id, id_public_user, montant } = req.body;
     if(cle !== "999") return res.status(403).send("Refusé");
@@ -203,6 +230,7 @@ app.post('/admin/valider-depot', async (req, res) => {
     } catch (e) { res.status(500).send("Erreur"); }
 });
 
+// Valider un retrait (Marque juste comme payé)
 app.post('/admin/valider-retrait', async (req, res) => {
     const { cle, transaction_db_id } = req.body;
     if(cle !== "999") return res.status(403).send("Refusé");
@@ -210,6 +238,7 @@ app.post('/admin/valider-retrait', async (req, res) => {
     res.json({ success: true });
 });
 
+// Rejeter une transaction (Rend l'argent si c'était un retrait)
 app.post('/admin/refuser-depot', async (req, res) => {
     const { cle, transaction_db_id } = req.body;
     if(cle !== "999") return res.status(403).send("Refusé");
@@ -221,5 +250,6 @@ app.post('/admin/refuser-depot', async (req, res) => {
     res.json({ success: true });
 });
 
+// --- DÉMARRAGE DU SERVEUR ---
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log("🚀 Serveur Connecté sur port " + PORT));
