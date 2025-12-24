@@ -250,6 +250,42 @@ app.post('/admin/refuser-depot', async (req, res) => {
     res.json({ success: true });
 });
 
+
+// --- AJOUTE CECI DANS LA SECTION ADMIN DU SERVEUR ---
+
+// Permet de modifier manuellement le solde d'un utilisateur (Bouton Editer)
+app.post('/admin/modifier-solde', async (req, res) => {
+    const { cle, id_public_user, nouveau_solde } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    try {
+        await pool.query('UPDATE utilisateurs SET balance = $1 WHERE id_public = $2', [nouveau_solde, id_public_user]);
+        res.json({ success: true });
+    } catch (e) { res.status(500).send("Erreur modification solde"); }
+});
+
+// Permet de changer le message personnalisé affiché à l'utilisateur
+app.post('/admin/modifier-message', async (req, res) => {
+    const { cle, id_public_user, nouveau_message } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    try {
+        await pool.query('UPDATE utilisateurs SET message = $1 WHERE id_public = $2', [nouveau_message, id_public_user]);
+        res.json({ success: true });
+    } catch (e) { res.status(500).send("Erreur modification message"); }
+});
+
+// Permet de supprimer définitivement un utilisateur
+app.post('/admin/supprimer-user', async (req, res) => {
+    const { cle, id_public_user } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    try {
+        await pool.query('DELETE FROM utilisateurs WHERE id_public = $1', [id_public_user]);
+        res.json({ success: true });
+    } catch (e) { res.status(500).send("Erreur suppression"); }
+});
+
+
+
+
 // --- DÉMARRAGE DU SERVEUR ---
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log("🚀 Serveur Connecté sur port " + PORT));
