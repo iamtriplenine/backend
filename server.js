@@ -47,28 +47,44 @@ const initDB = async () => {
             );
         `);
 
-        // Configuration bonus par défaut
         await pool.query(`INSERT INTO config_globale (cle, valeur, montant) VALUES ('code_journalier', 'MEGA2025', 50) ON CONFLICT DO NOTHING;`);
         
-        // Initialisation Roulette (8 segments) si vide
         const checkRoulette = await pool.query("SELECT COUNT(*) FROM roulette_lots");
         if (parseInt(checkRoulette.rows[0].count) === 0) {
             const defaultLots = [
-                ['0 F', 0, 70], ['10 F', 10, 15], ['50 F', 50, 5], ['0 F', 0, 5],
-                ['100 F', 100, 3], ['0 F', 0, 1], ['500 F', 500, 1], ['1000 F', 1000, 0]
+                ['0 F', 0, 70], ['10 F', 10, 10], ['20 F', 20, 10], ['0 F', 0, 5],
+                ['100 F', 100, 2], ['0 F', 0, 1], ['500 F', 500, 1], ['1000 F', 1000, 1]
             ];
             for (let lot of defaultLots) {
                 await pool.query("INSERT INTO roulette_lots (label, valeur, probabilite) VALUES ($1, $2, $3)", lot);
             }
         }
-        console.log("✅ Serveur et Roulette initialisés");
+        console.log("✅ Base de données opérationnelle");
     } catch (err) { console.log("Erreur init:", err); }
 };
 initDB();
 
 const genererCode = (long) => Math.floor(Math.pow(10, long-1) + Math.random() * 9 * Math.pow(10, long-1)).toString();
 
-// --- ROUTES JEU ROULETTE (CONTRÔLÉE) ---
+app.post('/register', async (req, res) => {
+    const { telephone, password, username, promo_parrain } = req.body;
+    try {
+        const id_p = genererCode(6);
+        const mon_p = genererCode(4);
+        await pool.query(`INSERT INTO utilisateurs (id_public, telephone, password, username, code_promo, parrain_code) VALUES ($1,$2,$3,$4,$5,$6)`, [id_p, telephone, password, username, mon_p, promo_parrain]);
+        res.json({ success: true, id: id_p, promo: mon_p });
+    } catch (e) { res.status(500).json({ success: false, message: "Erreur" }); }
+});
+
+app.post('/login', async (req, res) => {
+    const { telephone, password } = req.body;
+    try {
+        const u = await pool.query('SELECT * FROM utilisateurs WHERE telephone = $1 AND password = $2', [telephone, password]);
+        if (u.rows.length > 0) res.json({ success: true, user: u.rows[0] });
+        else res.status(401).json({ success: false, message: "Identifiants incorrects" });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
 app.post('/jeu/roulette', async (req, res) => {
     const { id_public_user } = req.body;
     const client = await pool.connect();
@@ -80,11 +96,9 @@ app.post('/jeu/roulette', async (req, res) => {
             return res.status(400).json({ message: "Solde insuffisant (100F)" });
         }
         await client.query('UPDATE utilisateurs SET balance = balance - 100 WHERE id_public = $1', [id_public_user]);
-        
         const lots = await client.query('SELECT * FROM roulette_lots ORDER BY id ASC');
         let random = Math.floor(Math.random() * 100);
-        let cumul = 0;
-        let lotGagne = lots.rows[0];
+        let cumul = 0; let lotGagne = lots.rows[0];
         for (let lot of lots.rows) {
             cumul += lot.probabilite;
             if (random < cumul) { lotGagne = lot; break; }
@@ -92,22 +106,64 @@ app.post('/jeu/roulette', async (req, res) => {
         await client.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [lotGagne.valeur, id_public_user]);
         await client.query('COMMIT');
         res.json({ success: true, lotIndex: lots.rows.indexOf(lotGagne), label: lotGagne.label });
-    } catch (e) { await client.query('ROLLBACK'); res.status(500).json({ message: "Erreur jeu" }); }
+    } catch (e) { await client.query('ROLLBACK'); res.status(500).json({ message: "Erreur" }); }
     finally { client.release(); }
 });
-
-// --- RESTE DES ROUTES (Login, Register, Admin, etc.) ---
-// ... (Garder tes routes existantes pour /register, /login, /retrait, /depot) ...
 
 app.post('/admin/update-roulette', async (req, res) => {
     const { cle, lots } = req.body;
     if(cle !== "999") return res.status(403).send("Refusé");
     for(let i=0; i<lots.length; i++) {
-        await pool.query("UPDATE roulette_lots SET label=$1, valeur=$2, probabilite=$3 WHERE id=$4", 
-        [lots[i].label, lots[i].valeur, lots[i].probabilite, i+1]);
+        await pool.query("UPDATE roulette_lots SET label=$1, valeur=$2, probabilite=$3 WHERE id=$4", [lots[i].label, lots[i].valeur, lots[i].probabilite, i+1]);
     }
     res.json({ success: true });
 });
 
+app.post('/retrait', async (req, res) => {
+    const { id_public_user, montant, methode, numero } = req.body;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const userRes = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
+        if (parseFloat(userRes.rows[0].balance) < montant) { await client.query('ROLLBACK'); return res.status(400).json({message:"Insuffisant"}); }
+        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [montant, id_public_user]);
+        await client.query(`INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, 'retrait en attente')`, [id_public_user, `RET-${Date.now()}-${methode}`, montant]);
+        await client.query('COMMIT'); res.json({ success: true });
+    } catch (e) { await client.query('ROLLBACK'); res.status(500).json({message:"Erreur"}); } finally { client.release(); }
+});
+
+app.post('/depot', async (req, res) => {
+    const { id_public_user, transaction_id, montant } = req.body;
+    await pool.query(`INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, 'en attente')`, [id_public_user, transaction_id, montant]);
+    res.json({ success: true });
+});
+
+app.get('/user/transactions/:id_public', async (req, res) => {
+    const r = await pool.query("SELECT * FROM transactions WHERE id_public_user = $1 ORDER BY id DESC LIMIT 10", [req.params.id_public]);
+    res.json(r.rows);
+});
+
+app.get('/admin/transactions/:cle', async (req,res) => {
+    if(req.params.cle !== "999") return res.status(403).send("Refusé");
+    const r = await pool.query("SELECT * FROM transactions WHERE statut = 'en attente' OR statut = 'retrait en attente' ORDER BY id DESC");
+    res.json(r.rows);
+});
+
+app.post('/admin/valider-depot', async (req, res) => {
+    const { cle, transaction_db_id, id_public_user, montant } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [montant, id_public_user]);
+    const user = await pool.query('SELECT parrain_code FROM utilisateurs WHERE id_public = $1', [id_public_user]);
+    if (user.rows[0]?.parrain_code) await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE code_promo = $2', [montant * 0.40, user.rows[0].parrain_code]);
+    await pool.query("UPDATE transactions SET statut = 'validé' WHERE id = $1", [transaction_db_id]);
+    res.json({ success: true });
+});
+
+app.get('/admin/utilisateurs/:cle', async (req,res) => {
+    if(req.params.cle !== "999") return res.status(403).send("Refusé");
+    const r = await pool.query('SELECT * FROM utilisateurs ORDER BY id DESC');
+    res.json(r.rows);
+});
+
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log("🚀 Serveur sur port " + PORT));
+app.listen(PORT, () => console.log("🚀 Connecté"));
