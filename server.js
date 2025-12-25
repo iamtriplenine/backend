@@ -43,6 +43,13 @@ const initDB = async () => {
             );
         `);
 
+// Ajoute la colonne pour stocker le minage (Mega Coins)
+await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
+
+
+
+
+      
         // Mise à jour de la colonne pour la nouvelle logique (Code Unique au lieu de Date)
         await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS dernier_code_utilise TEXT DEFAULT '';`);
         // Initialisation du code par défaut si la table est vide
@@ -187,6 +194,54 @@ app.get('/user/transactions/:id_public', async (req, res) => {
     const r = await pool.query("SELECT * FROM transactions WHERE id_public_user = $1 ORDER BY id DESC LIMIT 10", [req.params.id_public]);
     res.json(r.rows);
 });
+
+
+
+// ---------------------------------------------------------
+// --- SECTION : SYSTÈME DE MINAGE (NOUVEAU) ---
+// ---------------------------------------------------------
+
+// Route pour que l'utilisateur sauvegarde son minage en quittant la page
+app.post('/update-mining', async (req, res) => {
+    const { id_public_user, mining_balance } = req.body;
+    try {
+        await pool.query('UPDATE utilisateurs SET mining_balance = $1 WHERE id_public = $2', [mining_balance, id_public_user]);
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+// Route Admin : Convertir le minage d'un utilisateur en FCFA (100,000 MEGA = 50 FCFA)
+app.post('/admin/convertir-minage', async (req, res) => {
+    const { cle, id_public_user } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    
+    try {
+        const user = await pool.query('SELECT mining_balance FROM utilisateurs WHERE id_public = $1', [id_public_user]);
+        const mega = parseFloat(user.rows[0].mining_balance);
+        
+        if (mega < 100000) return res.status(400).json({ message: "Minimum 100,000 MEGA requis" });
+
+        const gainFCFA = (mega / 100000) * 50; // Calcul de conversion
+
+        await pool.query('BEGIN');
+        // On remet le minage à 0
+        await pool.query('UPDATE utilisateurs SET mining_balance = 0 WHERE id_public = $1', [id_public_user]);
+        // On ajoute l'argent au solde réel
+        await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [gainFCFA, id_public_user]);
+        await pool.query('COMMIT');
+
+        res.json({ success: true, message: `Converti ${mega} MEGA en ${gainFCFA} FCFA` });
+    } catch (e) {
+        await pool.query('ROLLBACK');
+        res.status(500).send("Erreur conversion");
+    }
+});
+
+
+
+
+
+
 
 // ---------------------------------------------------------
 // --- SECTION : ADMINISTRATION ---
