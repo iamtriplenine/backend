@@ -341,6 +341,46 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 
 
+
+
+// --- SECTION : RÉCUPÉRATION DES AFFILIÉS ---
+app.get('/user/affilies/:id_public', async (req, res) => {
+    try {
+        // 1. On trouve d'abord le code promo de l'utilisateur
+        const userRes = await pool.query('SELECT code_promo FROM utilisateurs WHERE id_public = $1', [req.params.id_public]);
+        
+        if (userRes.rows.length === 0) return res.status(404).json({ message: "Utilisateur non trouvé" });
+        
+        const monCodePromo = userRes.rows[0].code_promo;
+
+        // 2. On cherche tous les utilisateurs qui ont ce code comme 'parrain_code'
+        // On récupère leur ID public et la somme de leurs dépôts validés
+        const affilies = await pool.query(`
+            SELECT u.id_public, 
+                   COALESCE(SUM(t.montant), 0) as total_depose
+            FROM utilisateurs u
+            LEFT JOIN transactions t ON u.id_public = t.id_public_user AND t.statut = 'validé'
+            WHERE u.parrain_code = $1
+            GROUP BY u.id_public
+        `, [monCodePromo]);
+
+        res.json(affilies.rows);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ message: "Erreur lors de la récupération des affiliés" });
+    }
+});
+
+
+
+
+
+
+
+
+
+
+
 // --- DÉMARRAGE DU SERVEUR ---
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log("🚀 Serveur Connecté sur port " + PORT));
