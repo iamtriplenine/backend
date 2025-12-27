@@ -43,6 +43,14 @@ const initDB = async () => {
             );
         `);
 
+
+
+
+// Cette ligne ajoute la colonne pour stocker l'adresse type 0x...
+await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS wallet_address TEXT UNIQUE;`);
+
+      
+
 // Ajoute la colonne pour stocker le minage (Mega Coins)
 await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
 
@@ -81,15 +89,39 @@ const genererCode = (long) => Math.floor(Math.pow(10, long-1) + Math.random() * 
 app.post('/register', async (req, res) => {
     const { telephone, password, username, promo_parrain } = req.body;
     try {
-        const id_p = genererCode(6);
-        const mon_p = genererCode(4);
+        // --- GÉNÉRATION DES CODES ---
+        const id_p = genererCode(6); // Identifiant public (6 chiffres)
+        const mon_p = genererCode(4); // Code promo perso (4 chiffres)
+        
+        // --- NOUVEAU : GÉNÉRATION DE L'ADRESSE WALLET UNIQUE ---
+        // On crée une adresse hexadécimale type 0x... (ex: 0x5D3E9A)
+        const wallet_addr = "0x" + Math.random().toString(16).slice(2, 12).toUpperCase();
+
+        // --- INSERTION DANS LA BASE DE DONNÉES ---
+        // Note : On ajoute wallet_address à la fin de la liste des colonnes
         await pool.query(
-            `INSERT INTO utilisateurs (id_public, telephone, password, username, code_promo, parrain_code) VALUES ($1,$2,$3,$4,$5,$6)`,
-            [id_p, telephone, password, username, mon_p, promo_parrain]
+            `INSERT INTO utilisateurs (id_public, telephone, password, username, code_promo, parrain_code, wallet_address) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+            [id_p, telephone, password, username, mon_p, promo_parrain, wallet_addr]
         );
-        res.json({ success: true, id: id_p, promo: mon_p });
-    } catch (e) { res.status(500).json({ success: false, message: "Numéro déjà pris." }); }
+
+        // Si tout va bien, on renvoie les infos au client
+        res.json({ success: true, id: id_p, promo: mon_p, wallet: wallet_addr });
+
+    } catch (e) { 
+        // --- GESTION DES ERREURS (Doublons de numéros) ---
+        console.error("Erreur inscription:", e); // Pour voir le détail de l'erreur dans la console Render
+        res.status(500).json({ success: false, message: "Numéro de téléphone ou pseudo déjà utilisé." }); 
+    }
 });
+
+
+
+
+
+
+
+
+
 
 app.post('/login', async (req, res) => {
     const { telephone, password } = req.body;
