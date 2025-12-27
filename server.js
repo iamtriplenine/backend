@@ -54,7 +54,13 @@ await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balan
         await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS dernier_code_utilise TEXT DEFAULT '';`);
         // Initialisation du code par défaut si la table est vide
         await pool.query(`INSERT INTO config_globale (cle, valeur, montant) VALUES ('code_journalier', 'MEGA2025', 50) ON CONFLICT DO NOTHING;`);
-        
+
+       // --- INITIALISATION DU TAUX DE PARRAINAGE ---
+// Crée la variable dans la base de données avec 40% par défaut
+await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage_parrain', 40) ON CONFLICT DO NOTHING;`);
+
+
+      
         console.log("✅ Serveur prêt et Base de données synchronisée");
     } catch (err) { console.log("Erreur lors de l'initialisation:", err); }
 };
@@ -247,6 +253,24 @@ app.post('/admin/convertir-minage', async (req, res) => {
 // --- SECTION : ADMINISTRATION ---
 // ---------------------------------------------------------
 
+// --- MODIFICATION DU TAUX PAR L'ADMIN ---
+// Met à jour la valeur du pourcentage dans la base de données
+app.post('/admin/update-config-taux', async (req, res) => {
+    const { cle, nouveau_taux } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    try {
+        await pool.query("UPDATE config_globale SET montant = $1 WHERE cle = 'pourcentage_parrain'", [nouveau_taux]);
+        res.json({ success: true });
+    } catch (e) { res.status(500).send("Erreur"); }
+});
+
+
+
+
+
+
+
+
 // Met à jour le code secret et le montant. Dès que tu valides, l'ancien code ne fonctionne plus.
 app.post('/admin/update-bonus-code', async (req, res) => {
     const { cle, nouveau_code, nouveau_montant } = req.body;
@@ -270,20 +294,49 @@ app.get('/admin/transactions/:cle', async (req,res) => {
     res.json(r.rows);
 });
 
+
+
+
+
 // Valider un dépôt (Ajoute l'argent au client + Bonus Parrain 40%)
+
+// --- VALIDATION DE DÉPÔT AVEC CALCUL DYNAMIQUE ---
 app.post('/admin/valider-depot', async (req, res) => {
-    const { cle, transaction_db_id, id_public_user, montant } = req.body;
-    if(cle !== "999") return res.status(403).send("Refusé");
-    try {
-        await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [montant, id_public_user]);
-        const user = await pool.query('SELECT parrain_code FROM utilisateurs WHERE id_public = $1', [id_public_user]);
-        if (user.rows[0]?.parrain_code) {
-            await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE code_promo = $2', [montant * 0.40, user.rows[0].parrain_code]);
-        }
-        await pool.query("UPDATE transactions SET statut = 'validé' WHERE id = $1", [transaction_db_id]);
-        res.json({ success: true });
-    } catch (e) { res.status(500).send("Erreur"); }
+    const { cle, transaction_db_id, id_public_user, montant } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    try {
+        await pool.query('BEGIN');
+        
+        // 1. Créditer le client
+        await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [montant, id_public_user]);
+
+        // 2. Chercher le taux actuel en base de données
+        const configRes = await pool.query("SELECT montant FROM config_globale WHERE cle = 'pourcentage_parrain'");
+        const tauxActuel = (configRes.rows.length > 0 ? parseFloat(configRes.rows[0].montant) : 40) / 100;
+
+        // 3. Verser le bonus au parrain si il existe
+        const user = await pool.query('SELECT parrain_code FROM utilisateurs WHERE id_public = $1', [id_public_user]);
+        if (user.rows[0]?.parrain_code) {
+            const bonus = parseFloat(montant) * tauxActuel;
+            await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE code_promo = $2', [bonus, user.rows[0].parrain_code]);
+        }
+        
+        // 4. Valider la transaction
+        await pool.query("UPDATE transactions SET statut = 'validé' WHERE id = $1", [transaction_db_id]);
+        
+        await pool.query('COMMIT');
+        res.json({ success: true });
+    } catch (e) { 
+        await pool.query('ROLLBACK'); 
+        res.status(500).send("Erreur lors de la validation"); 
+    }
 });
+
+
+
+
+
+
 
 // Valider un retrait (Marque juste comme payé)
 app.post('/admin/valider-retrait', async (req, res) => {
@@ -372,7 +425,15 @@ app.get('/user/affilies/:id_public', async (req, res) => {
 });
 
 
-
+// --- RÉCUPÉRATION DU TAUX POUR L'INTERFACE UTILISATEUR ---
+// Cette route permet à user.html d'afficher le bon pourcentage dynamiquement
+app.get('/config/taux-parrainage', async (req, res) => {
+    try {
+        const config = await pool.query("SELECT montant FROM config_globale WHERE cle = 'pourcentage_parrain'");
+        const taux = config.rows.length > 0 ? config.rows[0].montant : 40;
+        res.json({ taux: taux });
+    } catch (e) { res.json({ taux: 40 }); }
+});
 
 
 
