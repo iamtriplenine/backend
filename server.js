@@ -288,6 +288,69 @@ app.post('/admin/convertir-minage', async (req, res) => {
 
 
 
+// ---------------------------------------------------------
+// --- SECTION : TRANSFERT ENTRE PORTEFEUILLES (WALLET) ---
+// ---------------------------------------------------------
+
+app.post('/transfert-wallet', async (req, res) => {
+    const { id_public_expediteur, adresse_destinataire, montant } = req.body;
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        // 1. Vérifier l'expéditeur et son solde
+        const expRes = await client.query('SELECT balance, wallet_address FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_expediteur]);
+        if (expRes.rows.length === 0) throw new Error("Expéditeur introuvable");
+        
+        const soldeExp = parseFloat(expRes.rows[0].balance);
+        if (soldeExp < montant) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, message: "Solde insuffisant" });
+        }
+
+        // 2. Vérifier si le destinataire existe via son adresse
+        const destRes = await client.query('SELECT id_public, balance FROM utilisateurs WHERE wallet_address = $1 FOR UPDATE', [adresse_destinataire]);
+        if (destRes.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, message: "Adresse destinataire invalide" });
+        }
+        const id_dest = destRes.rows[0].id_public;
+
+        // Sécurité : Interdire l'envoi à soi-même
+        if (expRes.rows[0].wallet_address === adresse_destinataire) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, message: "Envoi à soi-même interdit" });
+        }
+
+        // 3. Effectuer le mouvement d'argent
+        // Retrait chez l'expéditeur
+        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [montant, id_public_expediteur]);
+        // Ajout chez le destinataire
+        await client.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [montant, id_dest]);
+
+        // 4. Enregistrer la trace dans les transactions (pour l'historique et l'admin)
+        const transId = `TRF-${Date.now()}-${id_public_expediteur}`;
+        await client.query(
+            `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`,
+            [id_public_expediteur, transId, montant, `Transfert vers ${adresse_destinataire}`]
+        );
+
+        await client.query('COMMIT');
+        res.json({ success: true, message: "Transfert réussi" });
+
+    } catch (e) {
+        await client.query('ROLLBACK');
+        console.error("Erreur Transfert:", e);
+        res.status(500).json({ success: false, message: "Erreur technique lors du transfert" });
+    } finally {
+        client.release();
+    }
+});
+
+
+
+
 
 
 
