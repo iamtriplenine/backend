@@ -61,6 +61,26 @@ await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage
 
 
 
+
+
+
+
+
+
+// 1. On crée la colonne wallet_address pour tout le monde
+await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS wallet_address TEXT UNIQUE;`);
+
+// 2. On donne une adresse aux anciens qui n'en ont pas encore
+const anciens = await pool.query(`SELECT id_public FROM utilisateurs WHERE wallet_address IS NULL`);
+for (let row of anciens.rows) {
+    const adr = '0x' + Math.random().toString(16).slice(2, 10).toUpperCase();
+    await pool.query(`UPDATE utilisateurs SET wallet_address = $1 WHERE id_public = $2`, [adr, row.id_public]);
+}
+
+
+
+
+           
            
       
         console.log("✅ Serveur prêt et Base de données synchronisée");
@@ -76,27 +96,45 @@ const genererCode = (long) => Math.floor(Math.pow(10, long-1) + Math.random() * 
 // ---------------------------------------------------------
 
 app.post('/register', async (req, res) => {
+    const { telephone, password, username, promo_parrain } = req.body;
+    try {
+        const id_p = genererCode(6);
+        const mon_p = genererCode(4);
 
-       
-    const { telephone, password, username, promo_parrain } = req.body;
-    try {
-        const id_p = genererCode(6);
-        const mon_p = genererCode(4);
-        await pool.query(
-            `INSERT INTO utilisateurs (id_public, telephone, password, username, code_promo, parrain_code) VALUES ($1,$2,$3,$4,$5,$6)`,
-            [id_p, telephone, password, username, mon_p, promo_parrain]
-        );
-        res.json({ success: true, id: id_p, promo: mon_p });
-    } catch (e) { res.status(500).json({ success: false, message: "Numéro déjà pris." }); }
+        // --- AJOUT : Génération de l'adresse de transfert interne ---
+        const wallet_adr = '0x' + Math.random().toString(16).slice(2, 10).toUpperCase();
+
+        await pool.query(
+            `INSERT INTO utilisateurs (id_public, telephone, password, username, code_promo, parrain_code, wallet_address) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+            [id_p, telephone, password, username, mon_p, promo_parrain, wallet_adr]
+        );
+        
+        res.json({ success: true, id: id_p, promo: mon_p });
+    } catch (e) { 
+        res.status(500).json({ success: false, message: "Numéro déjà pris ou erreur serveur." }); 
+    }
 });
 
+
+
+
+
+
+
 app.post('/login', async (req, res) => {
-    const { telephone, password } = req.body;
-    try {
-        const u = await pool.query('SELECT * FROM utilisateurs WHERE telephone = $1 AND password = $2', [telephone, password]);
-        if (u.rows.length > 0) res.json({ success: true, user: u.rows[0] });
-        else res.status(401).json({ success: false, message: "Identifiants incorrects" });
-    } catch (e) { res.status(500).json({ success: false }); }
+    const { telephone, password } = req.body;
+    try {
+        // Le SELECT * récupère maintenant aussi la colonne wallet_address que nous avons ajoutée
+        const u = await pool.query('SELECT * FROM utilisateurs WHERE telephone = $1 AND password = $2', [telephone, password]);
+        
+        if (u.rows.length > 0) {
+            res.json({ success: true, user: u.rows[0] });
+        } else {
+            res.status(401).json({ success: false, message: "Identifiants incorrects" });
+        }
+    } catch (e) { 
+        res.status(500).json({ success: false, message: "Erreur serveur lors de la connexion" }); 
+    }
 });
 
 // ---------------------------------------------------------
