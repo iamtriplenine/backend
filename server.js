@@ -381,6 +381,22 @@ app.post('/admin/update-config-taux', async (req, res) => {
 
 
 
+// changer le pourcentage
+app.get('/config/taux-parrainage', async (req, res) => {
+    try {
+        const config = await pool.query("SELECT montant FROM config_globale WHERE cle = 'pourcentage_parrain'");
+        res.json({ taux: config.rows[0].montant });
+    } catch (e) {
+        res.status(500).json({ taux: 40 }); // Par défaut 40 si erreur
+    }
+});
+
+
+
+
+
+
+
 
 // --- SECTION : RÉCUPÉRATION DES AFFILIÉS ---
 app.get('/user/affilies/:id_public', async (req, res) => {
