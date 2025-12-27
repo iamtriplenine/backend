@@ -54,7 +54,18 @@ await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balan
         await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS dernier_code_utilise TEXT DEFAULT '';`);
         // Initialisation du code par défaut si la table est vide
         await pool.query(`INSERT INTO config_globale (cle, valeur, montant) VALUES ('code_journalier', 'MEGA2025', 50) ON CONFLICT DO NOTHING;`);
-        
+
+
+
+// AJOUTE CECI ICI :
+await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage_parrain', 40) ON CONFLICT DO NOTHING;`);
+
+
+
+
+
+
+      
         console.log("✅ Serveur prêt et Base de données synchronisée");
     } catch (err) { console.log("Erreur lors de l'initialisation:", err); }
 };
@@ -275,15 +286,30 @@ app.post('/admin/valider-depot', async (req, res) => {
     const { cle, transaction_db_id, id_public_user, montant } = req.body;
     if(cle !== "999") return res.status(403).send("Refusé");
     try {
+        await pool.query('BEGIN');
         await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [montant, id_public_user]);
+        
+        // C'est ici que la magie opère : on cherche le taux en base de données
         const user = await pool.query('SELECT parrain_code FROM utilisateurs WHERE id_public = $1', [id_public_user]);
+        const config = await pool.query("SELECT montant FROM config_globale WHERE cle = 'pourcentage_parrain'");
+        const tauxActuel = parseFloat(config.rows[0].montant) / 100;
+
         if (user.rows[0]?.parrain_code) {
-            await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE code_promo = $2', [montant * 0.40, user.rows[0].parrain_code]);
+            const bonus = montant * tauxActuel; 
+            await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE code_promo = $2', [bonus, user.rows[0].parrain_code]);
         }
         await pool.query("UPDATE transactions SET statut = 'validé' WHERE id = $1", [transaction_db_id]);
+        await pool.query('COMMIT');
         res.json({ success: true });
-    } catch (e) { res.status(500).send("Erreur"); }
+    } catch (e) { 
+        await pool.query('ROLLBACK');
+        res.status(500).send("Erreur"); 
+    }
 });
+
+
+
+
 
 // Valider un retrait (Marque juste comme payé)
 app.post('/admin/valider-retrait', async (req, res) => {
@@ -337,6 +363,19 @@ app.post('/admin/supprimer-user', async (req, res) => {
         res.json({ success: true });
     } catch (e) { res.status(500).send("Erreur suppression"); }
 });
+
+
+
+// ... route supprimer-user existante
+// AJOUTE CETTE NOUVELLE ROUTE JUSTE APRÈS :
+
+app.post('/admin/update-config-taux', async (req, res) => {
+    const { cle, nouveau_taux } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    await pool.query("UPDATE config_globale SET montant = $1 WHERE cle = 'pourcentage_parrain'", [nouveau_taux]);
+    res.json({ success: true });
+});
+
 
 
 
