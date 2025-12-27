@@ -292,6 +292,7 @@ app.post('/admin/convertir-minage', async (req, res) => {
 // --- SECTION : TRANSFERT ENTRE PORTEFEUILLES (WALLET) ---
 // ---------------------------------------------------------
 
+// --- SECTION : TRANSFERT ENTRE PORTEFEUILLES (MIS À JOUR POUR DOUBLE HISTORIQUE) ---
 app.post('/transfert-wallet', async (req, res) => {
     const { id_public_expediteur, adresse_destinataire, montant } = req.body;
     const client = await pool.connect();
@@ -300,7 +301,7 @@ app.post('/transfert-wallet', async (req, res) => {
         await client.query('BEGIN');
 
         // 1. Vérifier l'expéditeur et son solde
-        const expRes = await client.query('SELECT balance, wallet_address FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_expediteur]);
+        const expRes = await client.query('SELECT id_public, balance, wallet_address FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_expediteur]);
         if (expRes.rows.length === 0) throw new Error("Expéditeur introuvable");
         
         const soldeExp = parseFloat(expRes.rows[0].balance);
@@ -309,7 +310,7 @@ app.post('/transfert-wallet', async (req, res) => {
             return res.status(400).json({ success: false, message: "Solde insuffisant" });
         }
 
-        // 2. Vérifier si le destinataire existe via son adresse
+        // 2. Vérifier le destinataire par son adresse
         const destRes = await client.query('SELECT id_public, balance FROM utilisateurs WHERE wallet_address = $1 FOR UPDATE', [adresse_destinataire]);
         if (destRes.rows.length === 0) {
             await client.query('ROLLBACK');
@@ -323,17 +324,24 @@ app.post('/transfert-wallet', async (req, res) => {
             return res.status(400).json({ success: false, message: "Envoi à soi-même interdit" });
         }
 
-        // 3. Effectuer le mouvement d'argent
-        // Retrait chez l'expéditeur
+        // 3. Mouvement d'argent
         await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [montant, id_public_expediteur]);
-        // Ajout chez le destinataire
         await client.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [montant, id_dest]);
 
-        // 4. Enregistrer la trace dans les transactions (pour l'historique et l'admin)
-        const transId = `TRF-${Date.now()}-${id_public_expediteur}`;
+        // 4. DOUBLE ENREGISTREMENT DANS L'HISTORIQUE
+        const temps = Date.now();
+        
+        // A. Pour l'expéditeur (Moins d'argent)
         await client.query(
             `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`,
-            [id_public_expediteur, transId, montant, `Transfert vers ${adresse_destinataire}`]
+            [id_public_expediteur, `TRF-OUT-${temps}`, montant, `Transfert vers ${adresse_destinataire}`]
+        );
+
+        // B. Pour le destinataire (Plus d'argent)
+        // On utilise l'adresse de l'expéditeur pour que le receveur sache d'où ça vient
+        await client.query(
+            `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`,
+            [id_dest, `TRF-IN-${temps}`, montant, `Reçu de ${expRes.rows[0].wallet_address}`]
         );
 
         await client.query('COMMIT');
@@ -341,8 +349,7 @@ app.post('/transfert-wallet', async (req, res) => {
 
     } catch (e) {
         await client.query('ROLLBACK');
-        console.error("Erreur Transfert:", e);
-        res.status(500).json({ success: false, message: "Erreur technique lors du transfert" });
+        res.status(500).json({ success: false, message: "Erreur technique" });
     } finally {
         client.release();
     }
