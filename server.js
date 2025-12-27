@@ -464,6 +464,34 @@ app.get('/user/affilies/:id_public', async (req, res) => {
 
 
 
+// --- RÉPARATION DES ANCIENS COMPTES (GÉNÉRER ADRESSES WALLET) ---
+// Cette route cherche tous les utilisateurs sans adresse et leur en crée une
+app.post('/admin/generer-wallets-manquants', async (req, res) => {
+    const { cle } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+
+    try {
+        // 1. On récupère les utilisateurs qui n'ont pas d'adresse wallet
+        const users = await pool.query("SELECT id_public FROM utilisateurs WHERE wallet_address IS NULL OR wallet_address = ''");
+        
+        let compteurs = 0;
+        for (let user of users.rows) {
+            // Génération d'une adresse unique pour chaque ancien
+            const nouvelle_addr = "0x" + Math.random().toString(16).slice(2, 12).toUpperCase();
+            await pool.query("UPDATE utilisateurs SET wallet_address = $1 WHERE id_public = $2", [nouvelle_addr, user.id_public]);
+            compteurs++;
+        }
+
+        res.json({ success: true, message: `${compteurs} adresses générées avec succès !` });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ success: false, message: "Erreur lors de la génération." });
+    }
+});
+
+
+
+
 
 
 
