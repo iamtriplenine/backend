@@ -61,28 +61,6 @@ await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage
 
 
 
-
-
-// 1. Créer la colonne wallet_address si elle n'existe pas
-await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS wallet_address TEXT UNIQUE;`);
-
-// 2. SCRIPT DE MIGRATION : Attribuer une adresse aux anciens qui n'en ont pas
-const anciens = await pool.query(`SELECT id_public FROM utilisateurs WHERE wallet_address IS NULL`);
-for (let row of anciens.rows) {
-    const adr = '0x' + Math.random().toString(16).slice(2, 10).toUpperCase();
-    await pool.query(`UPDATE utilisateurs SET wallet_address = $1 WHERE id_public = $2`, [adr, row.id_public]);
-}
-
-
-
-
-
-
-
-
-
-
-
            
       
         console.log("✅ Serveur prêt et Base de données synchronisée");
@@ -98,21 +76,6 @@ const genererCode = (long) => Math.floor(Math.pow(10, long-1) + Math.random() * 
 // ---------------------------------------------------------
 
 app.post('/register', async (req, res) => {
-
-
-
-
-
-
-// Dans la route /register, ajoute cette variable avant l'INSERT :
-const wallet_adr = '0x' + Math.random().toString(16).slice(2, 10).toUpperCase();
-
-// Puis ajoute wallet_address dans ton INSERT INTO :
-await pool.query(
-    `INSERT INTO utilisateurs (..., wallet_address) VALUES (..., $7)`,
-    [..., wallet_adr] 
-);
-
 
        
     const { telephone, password, username, promo_parrain } = req.body;
