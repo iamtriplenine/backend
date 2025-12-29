@@ -12,62 +12,84 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-// --- INITIALISATION DES TABLES ET CONFIGURATION (Mise à jour avec Frais) ---
+// --- INITIALISATION DES TABLES ET CONFIGURATION ---
 const initDB = async () => {
-    try {
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS utilisateurs (
-                id SERIAL PRIMARY KEY,
-                id_public VARCHAR(6) UNIQUE,
-                telephone VARCHAR(20) UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                username TEXT,
-                code_promo VARCHAR(4) UNIQUE,
-                parrain_code VARCHAR(4),
-                balance DECIMAL(15,2) DEFAULT 0,
-                message TEXT DEFAULT '',
-                dernier_code_utilise TEXT DEFAULT ''
-            );
-            CREATE TABLE IF NOT EXISTS transactions (
-                id SERIAL PRIMARY KEY,
-                id_public_user VARCHAR(6),
-                transaction_id TEXT UNIQUE,
-                montant DECIMAL(15,2),
-                statut TEXT DEFAULT 'en attente',
-                date_crea TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS config_globale (
-                cle TEXT PRIMARY KEY,
-                valeur TEXT,
-                montant DECIMAL(15,2)
-            );
-        `);
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS utilisateurs (
+                id SERIAL PRIMARY KEY,
+                id_public VARCHAR(6) UNIQUE,
+                telephone VARCHAR(20) UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                username TEXT,
+                code_promo VARCHAR(4) UNIQUE,
+                parrain_code VARCHAR(4),
+                balance DECIMAL(15,2) DEFAULT 0,
+                message TEXT DEFAULT '',
+                dernier_code_utilise TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS transactions (
+                id SERIAL PRIMARY KEY,
+                id_public_user VARCHAR(6),
+                transaction_id TEXT UNIQUE,
+                montant DECIMAL(15,2),
+                statut TEXT DEFAULT 'en attente',
+                date_crea TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS config_globale (
+                cle TEXT PRIMARY KEY,
+                valeur TEXT,
+                montant DECIMAL(15,2)
+            );
+        `);
 
-        // Ajout des colonnes nécessaires si elles n'existent pas
-        await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
-        await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS dernier_code_utilise TEXT DEFAULT '';`);
-        await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS wallet_address TEXT UNIQUE;`);
+// Ajoute la colonne pour stocker le minage (Mega Coins)
+await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
 
-        // --- INITIALISATION DES VALEURS DE CONFIGURATION ---
-        // Code bonus par défaut
-        await pool.query(`INSERT INTO config_globale (cle, valeur, montant) VALUES ('code_journalier', 'MEGA2025', 50) ON CONFLICT DO NOTHING;`);
-        // Taux de parrainage par défaut (40%)
-        await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage_parrain', 40) ON CONFLICT DO NOTHING;`);
-        
-        // --- NOUVEAU : Frais de transfert par défaut (5%) ---
-        await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('frais_transfert', 5) ON CONFLICT DO NOTHING;`);
 
-        // Attribution d'adresses aux anciens utilisateurs [cite: 2025-12-27]
-        const anciens = await pool.query(`SELECT id_public FROM utilisateurs WHERE wallet_address IS NULL`);
-        for (let row of anciens.rows) {
-            const adr = '0x' + Math.random().toString(16).slice(2, 10).toUpperCase();
-            await pool.query(`UPDATE utilisateurs SET wallet_address = $1 WHERE id_public = $2`, [adr, row.id_public]);
-        }
 
-        console.log("✅ Serveur prêt : Tables, Parrainage et Frais de transfert configurés.");
-    } catch (err) { console.log("Erreur lors de l'initialisation:", err); }
+
+      
+        // Mise à jour de la colonne pour la nouvelle logique (Code Unique au lieu de Date)
+        await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS dernier_code_utilise TEXT DEFAULT '';`);
+        // Initialisation du code par défaut si la table est vide
+        await pool.query(`INSERT INTO config_globale (cle, valeur, montant) VALUES ('code_journalier', 'MEGA2025', 50) ON CONFLICT DO NOTHING;`);
+
+       // --- INITIALISATION DU TAUX DE PARRAINAGE ---
+// Crée la variable dans la base de données avec 40% par défaut
+await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage_parrain', 40) ON CONFLICT DO NOTHING;`);
+
+
+
+
+
+
+
+
+
+// 1. On crée la colonne wallet_address pour tout le monde
+await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS wallet_address TEXT UNIQUE;`);
+
+// 2. On donne une adresse aux anciens qui n'en ont pas encore
+const anciens = await pool.query(`SELECT id_public FROM utilisateurs WHERE wallet_address IS NULL`);
+for (let row of anciens.rows) {
+    const adr = '0x' + Math.random().toString(16).slice(2, 10).toUpperCase();
+    await pool.query(`UPDATE utilisateurs SET wallet_address = $1 WHERE id_public = $2`, [adr, row.id_public]);
+}
+
+
+
+
+           
+           
+      
+        console.log("✅ Serveur prêt et Base de données synchronisée");
+    } catch (err) { console.log("Erreur lors de l'initialisation:", err); }
 };
 initDB();
+
+
+
 
 // --- PETIT OUTIL POUR GÉNÉRER DES CODES (ID PUBLIC, ETC.) ---
 const genererCode = (long) => Math.floor(Math.pow(10, long-1) + Math.random() * 9 * Math.pow(10, long-1)).toString();
@@ -359,18 +381,7 @@ app.post('/admin/update-config-taux', async (req, res) => {
 
 
 
-// --- ADMIN : MODIFIER LES FRAIS DE TRANSFERT ---
-app.post('/admin/update-frais-transfert', async (req, res) => {
-    const { cle, nouveaux_frais } = req.body;
-    if(cle !== "999") return res.status(403).send("Refusé");
-    try {
-        // Met à jour la valeur dans la base de données
-        await pool.query("UPDATE config_globale SET montant = $1 WHERE cle = 'frais_transfert'", [nouveaux_frais]);
-        res.json({ success: true });
-    } catch (e) { 
-        res.status(500).send("Erreur lors de la mise à jour"); 
-    }
-});
+
 
 
 
