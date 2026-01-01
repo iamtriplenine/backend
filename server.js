@@ -514,32 +514,45 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 
 // --- SECTION : RÉCUPÉRATION DES AFFILIÉS ---
+
+
+// Route mise à jour pour garantir un retour propre (tableau vide au lieu de undefined)
 app.get('/user/affilies/:id_public', async (req, res) => {
-    try {
-        // 1. On trouve d'abord le code promo de l'utilisateur
-        const userRes = await pool.query('SELECT code_promo FROM utilisateurs WHERE id_public = $1', [req.params.id_public]);
-        
-        if (userRes.rows.length === 0) return res.status(404).json({ message: "Utilisateur non trouvé" });
-        
-        const monCodePromo = userRes.rows[0].code_promo;
+    try {
+        const userRes = await pool.query('SELECT code_promo FROM utilisateurs WHERE id_public = $1', [req.params.id_public]);
+        
+        if (userRes.rows.length === 0) {
+            return res.json([]); // Si l'user n'existe pas, on renvoie une liste vide
+        }
+        
+        const monCodePromo = userRes.rows[0].code_promo;
 
-        // 2. On cherche tous les utilisateurs qui ont ce code comme 'parrain_code'
-        // On récupère leur ID public et la somme de leurs dépôts validés
-        const affilies = await pool.query(`
-            SELECT u.id_public, 
-                   COALESCE(SUM(t.montant), 0) as total_depose
-            FROM utilisateurs u
-            LEFT JOIN transactions t ON u.id_public = t.id_public_user AND t.statut = 'validé'
-            WHERE u.parrain_code = $1
-            GROUP BY u.id_public
-        `, [monCodePromo]);
+        const affilies = await pool.query(`
+            SELECT u.id_public, 
+                   COALESCE(SUM(t.montant), 0) as total_depose
+            FROM utilisateurs u
+            LEFT JOIN transactions t ON u.id_public = t.id_public_user AND t.statut = 'validé'
+            WHERE u.parrain_code = $1
+            GROUP BY u.id_public
+        `, [monCodePromo]);
 
-        res.json(affilies.rows);
-    } catch (e) {
-        console.error(e);
-        res.status(500).json({ message: "Erreur lors de la récupération des affiliés" });
-    }
+        // On renvoie les résultats, PostgreSQL renvoie un tableau vide .rows si rien n'est trouvé
+        res.json(affilies.rows); 
+    } catch (e) {
+        console.error(e);
+        res.status(500).json([]); // En cas d'erreur, on renvoie un tableau vide pour ne pas faire planter le client
+    }
 });
+
+
+
+
+
+
+
+
+
+
 
 
 // --- RÉCUPÉRATION DU TAUX POUR L'INTERFACE UTILISATEUR ---
