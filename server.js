@@ -65,27 +65,7 @@ await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage
 
 
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
-// --- NOUVELLES TABLES POUR L'INVESTISSEMENT ---
-await pool.query(`
-    CREATE TABLE IF NOT EXISTS machines (
-        id SERIAL PRIMARY KEY,
-        nom VARCHAR(100) NOT NULL,
-        prix DECIMAL(15,2) NOT NULL,
-        gain_jour DECIMAL(15,2) NOT NULL,
-        cycle_jours INTEGER NOT NULL,
-        limite_achat INTEGER DEFAULT 1,
-        statut TEXT DEFAULT 'actif'
-    );
 
-    CREATE TABLE IF NOT EXISTS investissements (
-        id SERIAL PRIMARY KEY,
-        id_public_user VARCHAR(6),
-        id_machine INTEGER REFERENCES machines(id),
-        date_achat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        dernier_recolte TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        statut TEXT DEFAULT 'en cours'
-    );
-`);
 
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
 
@@ -546,99 +526,7 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 
 
-// Route pour lister les machines (utilisée par l'admin et les clients)
-app.get('/admin/machines', async (req, res) => {
-    try {
-        const machines = await pool.query('SELECT * FROM machines ORDER BY id ASC');
-        res.json(machines.rows);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
 
-
-
-
-
-
-
-
-// Ajouter ou Modifier une machine
-// Route pour ajouter ou modifier une machine
-app.post('/admin/config-machine', async (req, res) => {
-    const { cle, id, nom, prix, gain_jour, cycle_jours, limite_achat } = req.body;
-    if(cle !== "999") return res.status(403).send("Refusé");
-
-    try {
-        if(id) {
-            // Modification d'une machine existante
-            await pool.query(
-                'UPDATE machines SET nom=$1, prix=$2, gain_jour=$3, cycle_jours=$4, limite_achat=$5 WHERE id=$6',
-                [nom, prix, gain_jour, cycle_jours, limite_achat, id]
-            );
-        } else {
-            // Insertion d'une nouvelle machine
-            await pool.query(
-                'INSERT INTO machines (nom, prix, gain_jour, cycle_jours, limite_achat) VALUES ($1, $2, $3, $4, $5)',
-                [nom, prix, gain_jour, cycle_jours, limite_achat]
-            );
-        }
-        res.json({ success: true });
-    } catch (e) {
-        console.error(e);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-
-
-
-
-
-
-
-
-
-
-
-// Liste des machines + compte d'achats pour l'utilisateur
-app.get('/machines-disponibles/:id_public', async (req, res) => {
-    try {
-        const result = await pool.query(`
-            SELECT m.*, 
-            (SELECT COUNT(*) FROM investissements i WHERE i.id_machine = m.id AND i.id_public_user = $1 AND i.statut = 'en cours') as total_user
-            FROM machines m WHERE m.statut = 'actif'
-        `, [req.params.id_public]);
-        res.json(result.rows);
-    } catch (e) { res.status(500).send("Erreur"); }
-});
-
-// Route d'achat sécurisée
-app.post('/acheter-machine', async (req, res) => {
-    const { id_public_user, id_machine } = req.body;
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        
-        // 1. Vérifier la machine et le solde
-        const mach = await client.query('SELECT * FROM machines WHERE id = $1', [id_machine]);
-        const user = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
-        const nbrAchat = await client.query('SELECT COUNT(*) FROM investissements WHERE id_machine = $1 AND id_public_user = $2 AND statut = \'en cours\'', [id_machine, id_public_user]);
-
-        if (parseFloat(user.rows[0].balance) < parseFloat(mach.rows[0].prix)) throw new Error("Solde insuffisant");
-        if (parseInt(nbrAchat.rows[0].count) >= mach.rows[0].limite_achat) throw new Error("Limite d'achat atteinte");
-
-        // 2. Déduire l'argent et enregistrer l'achat
-        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [mach.rows[0].prix, id_public_user]);
-        await client.query('INSERT INTO investissements (id_public_user, id_machine) VALUES ($1, $2)', [id_public_user, id_machine]);
-
-        await client.query('COMMIT');
-        res.json({ success: true });
-    } catch (e) {
-        await client.query('ROLLBACK');
-        res.status(400).json({ message: e.message });
-    } finally { client.release(); }
-});
 
 
 // (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
