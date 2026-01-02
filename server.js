@@ -41,9 +41,27 @@ const initDB = async () => {
                 valeur TEXT,
                 montant DECIMAL(15,2)
             );
+            CREATE TABLE IF NOT EXISTS catalogue_machines (
+        id SERIAL PRIMARY KEY,
+        nom TEXT NOT NULL,
+        prix DECIMAL(15,2) NOT NULL,
+        gain_jour DECIMAL(15,2) NOT NULL,
+        cycle_jours INTEGER NOT NULL,
+        limite_achat INTEGER DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS machines_utilisateurs (
+        id SERIAL PRIMARY KEY,
+        id_public_user VARCHAR(6),
+        id_machine INTEGER,
+        date_achat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        dernier_retrait_gain TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        gains_collectes DECIMAL(15,2) DEFAULT 0,
+        expiree BOOLEAN DEFAULT FALSE,
+        FOREIGN KEY (id_machine) REFERENCES catalogue_machines(id)
+    );
         `);
-
-// Ajoute la colonne pour stocker le minage (Mega Coins)
+// 
+            // Ajoute la colonne pour stocker le minage (Mega Coins)
 await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
 
 
@@ -526,7 +544,58 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 
 
+/** * ROUTE : Récupérer le catalogue pour la boutique
+ */
+app.get('/machines-disponibles', async (req, res) => {
+    const { id_public } = req.query;
+    try {
+        const machines = await pool.query(`
+            SELECT c.*, 
+            (SELECT COUNT(*) FROM machines_utilisateurs WHERE id_machine = c.id AND id_public_user = $1) as achat_actuel
+            FROM catalogue_machines c
+        `, [id_public]);
+        res.json(machines.rows);
+    } catch (e) { res.status(500).json([]); }
+});
 
+/** * ROUTE : Calculer et récupérer les machines d'un utilisateur
+ * Cette route calcule les gains "en direct" basés sur le temps écoulé
+ */
+app.get('/user/mes-machines/:id_public', async (req, res) => {
+    try {
+        const query = `
+            SELECT mu.*, c.nom, c.gain_jour, c.cycle_jours
+            FROM machines_utilisateurs mu
+            JOIN catalogue_machines c ON mu.id_machine = c.id
+            WHERE mu.id_public_user = $1 AND mu.expiree = FALSE
+        `;
+        const result = await pool.query(query, [req.params.id_public]);
+        
+        let totalGainsHistoriques = 0;
+        const machinesCalculees = result.rows.map(m => {
+            // Calcul du gain depuis le dernier retrait ou l'achat
+            const debut = new Date(m.dernier_retrait_gain);
+            const maintenant = new Date();
+            const heuresEcoulees = (maintenant - debut) / (1000 * 60 * 60);
+            
+            // Gain par heure = gain_jour / 24
+            const gainParHeure = parseFloat(m.gain_jour) / 24;
+            const gainActuel = heuresEcoulees * gainParHeure;
+
+            totalGainsHistoriques += parseFloat(m.gains_collectes);
+
+            return {
+                ...m,
+                gain_actuel_non_collecte: gainActuel.toFixed(2)
+            };
+        });
+
+        res.json({
+            totalGainsHistoriques: totalGainsHistoriques,
+            machines: machinesCalculees
+        });
+    } catch (e) { res.status(500).json({ machines: [] }); }
+});
 
 
 // (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
