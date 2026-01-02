@@ -564,32 +564,30 @@ app.get('/admin/machines', async (req, res) => {
 
 
 // Ajouter ou Modifier une machine
+// Route pour ajouter ou modifier une machine
 app.post('/admin/config-machine', async (req, res) => {
     const { cle, id, nom, prix, gain_jour, cycle_jours, limite_achat } = req.body;
     if(cle !== "999") return res.status(403).send("Refusé");
 
     try {
-        if(id) { // Modification
+        if(id) {
+            // Modification d'une machine existante
             await pool.query(
                 'UPDATE machines SET nom=$1, prix=$2, gain_jour=$3, cycle_jours=$4, limite_achat=$5 WHERE id=$6',
                 [nom, prix, gain_jour, cycle_jours, limite_achat, id]
             );
-        } else { // Nouvel ajout
+        } else {
+            // Insertion d'une nouvelle machine
             await pool.query(
-                'INSERT INTO machines (nom, prix, gain_jour, cycle_jours, limite_achat) VALUES ($1,$2,$3,$4,$5)',
+                'INSERT INTO machines (nom, prix, gain_jour, cycle_jours, limite_achat) VALUES ($1, $2, $3, $4, $5)',
                 [nom, prix, gain_jour, cycle_jours, limite_achat]
             );
         }
         res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Supprimer une machine
-app.post('/admin/delete-machine', async (req, res) => {
-    const { cle, id } = req.body;
-    if(cle !== "999") return res.status(403).send("Refusé");
-    await pool.query('DELETE FROM machines WHERE id = $1', [id]);
-    res.json({ success: true });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 
