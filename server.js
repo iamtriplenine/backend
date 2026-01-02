@@ -544,6 +544,25 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 // (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
 
+
+
+// Route pour lister les machines (utilisée par l'admin et les clients)
+app.get('/admin/machines', async (req, res) => {
+    try {
+        const machines = await pool.query('SELECT * FROM machines ORDER BY id ASC');
+        res.json(machines.rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
+
+
+
+
+
+
 // Ajouter ou Modifier une machine
 app.post('/admin/config-machine', async (req, res) => {
     const { cle, id, nom, prix, gain_jour, cycle_jours, limite_achat } = req.body;
