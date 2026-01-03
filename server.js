@@ -66,20 +66,7 @@ await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage
 
 
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
-// TABLE DES MACHINES ACHETÉES PAR LES UTILISATEURS
-await pool.query(`
-    CREATE TABLE IF NOT EXISTS machines_achetees (
-        id SERIAL PRIMARY KEY,
-        id_public_user VARCHAR(6),
-        nom_machine TEXT,
-        prix_achat DECIMAL(15,2),
-        gain_quotidien DECIMAL(15,2),
-        date_achat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        date_fin TIMESTAMP,
-        dernier_recolte TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        statut TEXT DEFAULT 'actif'
-    );
-`);
+
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
 
 
@@ -116,17 +103,7 @@ initDB();
 
 
 
-/* --- CATALOGUE DES MACHINES (MODIFIABLE ICI) --- */
-const CATALOGUE_MACHINES = [
-    { id: "M1", nom: "MICRO-S3", prix: 500, gain: 50, duree: 15, limite: 5 },
-    { id: "M2", nom: "CORE-X9", prix: 2000, gain: 250, duree: 20, limite: 2 },
-    { id: "M3", nom: "ULTRA-SERVER", prix: 10000, gain: 1500, duree: 10, limite: 1 }
-];
 
-// Route pour envoyer le catalogue au client
-app.get('/machines/catalogue', (req, res) => {
-    res.json(CATALOGUE_MACHINES);
-});
 
 
 
@@ -708,117 +685,12 @@ app.get('/config/taux-parrainage', async (req, res) => {
 
 
 // --- ROUTES ADMIN : GESTION DU CATALOGUE ---
-// Route Admin pour voir TOUTES les machines achetées
-app.get('/admin/suivi-machines/:cle', async (req, res) => {
-    if(req.params.cle !== "999") return res.status(403).send("Refusé");
-    try {
-        const r = await pool.query('SELECT * FROM machines_achetees ORDER BY date_achat DESC');
-        res.json(r.rows);
-    } catch (e) {
-        res.status(500).send("Erreur serveur");
-    }
-});
 
-// Route pour forcer manuellement la distribution depuis le panel admin
-app.post('/admin/force-distribution/:cle', async (req, res) => {
-    if(req.params.cle !== "999") return res.status(403).send("Refusé");
-    // Ici, tu peux copier-coller la logique de distribution du setInterval 
-    // ou créer une fonction commune pour éviter la répétition du code.
-    res.json({ success: true }); 
-});
-
-
-// --- RÉCUPÉRATION DES STATS D'INVESTISSEMENT ---
-app.get('/user/machines-stats/:id_public', async (req, res) => {
-    try {
-        const machines = await pool.query(
-            "SELECT * FROM machines_achetees WHERE id_public_user = $1 ORDER BY id DESC", 
-            [req.params.id_public]
-        );
-
-        const stats = await pool.query(`
-            SELECT 
-                COUNT(*) as nb_machines, 
-                COALESCE(SUM(gain_quotidien), 0) as gains_par_jour 
-            FROM machines_achetees 
-            WHERE id_public_user = $1 AND statut = 'actif'
-        `, [req.params.id_public]);
-
-        res.json({
-            liste: machines.rows,
-            stats: {
-                nb_machines: stats.rows[0].nb_machines,
-                gains_par_jour: stats.rows[0].gains_par_jour
-            }
-        });
-    } catch (e) {
-        res.status(500).json({ message: "Erreur stats" });
-    }
-});
 
 
 
 
 // --- DÉMARRAGE DU SERVEUR ---
 const PORT = process.env.PORT || 10000;
-
-
-/* --- SYSTÈME DE DISTRIBUTION SANS DÉPENDANCE (HEURE GMT/CÔTE D'IVOIRE) --- */
-let distributionFaiteAujourdhui = false;
-
-setInterval(async () => {
-    const maintenant = new Date();
-    const heures = maintenant.getUTCHours(); // GMT est l'heure de la Côte d'Ivoire
-    const minutes = maintenant.getUTCMinutes();
-
-    // Si il est entre 00:00 et 00:01 et que la distribution n'est pas encore faite
-    if (heures === 0 && minutes === 0 && !distributionFaiteAujourdhui) {
-        console.log("🚀 Minuit à Abidjan : Lancement de la distribution...");
-        distributionFaiteAujourdhui = true; // On verrouille pour ne pas le faire 2 fois la même minute
-        
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
-            
-            // 1. On récupère les machines actives
-            const machines = await client.query(`
-                SELECT * FROM machines_achetees 
-                WHERE statut = 'actif' AND date_fin > CURRENT_TIMESTAMP
-            `);
-
-            for (let m of machines.rows) {
-                // 2. Créditer l'utilisateur
-                await client.query(
-                    'UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2',
-                    [m.gain_quotidien, m.id_public_user]
-                );
-                
-                // 3. Historique
-                await client.query(
-                    `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) 
-                     VALUES ($1, $2, $3, $4)`,
-                    [m.id_public_user, `AUTO-GAIN-${Date.now()}`, m.gain_quotidien, `Gain machine: ${m.nom_machine}`]
-                );
-            }
-
-            // 4. Désactiver les contrats finis
-            await client.query("UPDATE machines_achetees SET statut = 'terminé' WHERE date_fin <= CURRENT_TIMESTAMP");
-
-            await client.query('COMMIT');
-            console.log("✅ Gains distribués avec succès.");
-        } catch (e) {
-            await client.query('ROLLBACK');
-            console.error("❌ Erreur lors de la distribution automatique", e);
-        } finally {
-            client.release();
-        }
-    }
-
-    // Réinitialiser le verrou à 01h00 du matin pour le lendemain
-    if (heures === 1) {
-        distributionFaiteAujourdhui = false;
-    }
-}, 60000); // Le serveur vérifie l'heure toutes les 60 secondes
-
 
 app.listen(PORT, () => console.log("🚀 Serveur Connecté sur port " + PORT));
