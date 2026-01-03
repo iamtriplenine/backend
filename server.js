@@ -627,16 +627,32 @@ app.get('/config/taux-parrainage', async (req, res) => {
 // --- ROUTES ADMIN : GESTION DU CATALOGUE ---
 app.post('/admin/upsert-machine', async (req, res) => {
     const { cle, id_machine, nom, prix, gain, duree, limite } = req.body;
-    if(cle !== "999") return res.status(403).send("Refusé");
+    
+    // Vérification de sécurité
+    if(cle !== "999") return res.status(403).send("Clé Admin incorrecte");
+    
+    // Vérification des données reçues
+    if(!id_machine || !nom || !prix) {
+        return res.status(400).send("Données manquantes (ID, Nom ou Prix)");
+    }
+
     try {
         await pool.query(
             `INSERT INTO config_machines (id_machine, nom, prix, gain, duree, limite) 
              VALUES ($1, $2, $3, $4, $5, $6) 
-             ON CONFLICT (id_machine) DO UPDATE SET nom=$2, prix=$3, gain=$4, duree=$5, limite=$6`,
+             ON CONFLICT (id_machine) DO UPDATE SET 
+                nom = EXCLUDED.nom, 
+                prix = EXCLUDED.prix, 
+                gain = EXCLUDED.gain, 
+                duree = EXCLUDED.duree, 
+                limite = EXCLUDED.limite`,
             [id_machine, nom, prix, gain, duree, limite]
         );
         res.json({ success: true });
-    } catch (e) { res.status(500).send("Erreur serveur"); }
+    } catch (e) { 
+        console.error("ERREUR SQL UPSERT:", e.message);
+        res.status(500).send("Erreur SQL: " + e.message); 
+    }
 });
 
 
