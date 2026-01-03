@@ -41,16 +41,6 @@ const initDB = async () => {
                 valeur TEXT,
                 montant DECIMAL(15,2)
             );
-
-            CREATE TABLE IF NOT EXISTS config_machines (
-        id_machine VARCHAR(50) PRIMARY KEY,
-        nom TEXT NOT NULL,
-        prix DECIMAL(15,2) NOT NULL,
-        gain DECIMAL(15,2) NOT NULL,
-        duree INTEGER NOT NULL,
-        limite INTEGER DEFAULT 1,
-        date_creation TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
            
         `);
 // 
@@ -534,94 +524,6 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 
 // (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
-
-// --- [SERVEUR] ENREGISTRER OU MODIFIER UNE MACHINE ---
-app.post('/admin/upsert-machine', async (req, res) => {
-    const { cle, id_machine, nom, prix, gain, duree, limite } = req.body;
-    if (cle !== "999") return res.status(403).send("Accès refusé");
-
-    try {
-        await pool.query(`
-            INSERT INTO config_machines (id_machine, nom, prix, gain, duree, limite)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (id_machine) DO UPDATE 
-            SET nom=$2, prix=$3, gain=$4, duree=$5, limite=$6`,
-            [id_machine, nom, prix, gain, duree, limite]
-        );
-        res.json({ success: true });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// --- [SERVEUR] RÉCUPÉRER LE CATALOGUE (POUR ADMIN ET CLIENT) ---
-app.get('/admin/get-config-machines/:cle', async (req, res) => {
-    if (req.params.cle !== "999") return res.status(403).send("Accès refusé");
-    try {
-        const result = await pool.query('SELECT * FROM config_machines ORDER BY prix ASC');
-        res.json(result.rows);
-    } catch (e) { res.status(500).send(e.message); }
-});
-
-// --- [SERVEUR] SUPPRIMER UNE CONFIGURATION ---
-app.post('/admin/delete-config-machine', async (req, res) => {
-    const { cle, id_machine } = req.body;
-    if (cle !== "999") return res.status(403).send("Accès refusé");
-    try {
-        await pool.query('DELETE FROM config_machines WHERE id_machine = $1', [id_machine]);
-        res.json({ success: true });
-    } catch (e) { res.status(500).send(e.message); }
-});
-
-
-
-
-
-
-
-
-
-app.post('/investir/acheter', async (req, res) => {
-    const { id_public_user, id_machine } = req.body;
-    const client = await pool.connect();
-
-    try {
-        await client.query('BEGIN');
-
-        // 1. Récupérer la config de la machine depuis la DB
-        const configRes = await client.query('SELECT * FROM config_machines WHERE id_machine = $1', [id_machine]);
-        if (configRes.rows.length === 0) throw new Error("Machine introuvable");
-        const machine = configRes.rows[0];
-
-        // 2. Vérifier la limite d'achat personnalisée (celle que tu as mise dans le panel)
-        const checkAchat = await client.query(
-            'SELECT COUNT(*) FROM investissements WHERE id_public_user = $1 AND nom_machine = $2',
-            [id_public_user, machine.nom]
-        );
-        
-        if (parseInt(checkAchat.rows[0].count) >= machine.limite) {
-            throw new Error(`Limite atteinte : max ${machine.limite} pour cette machine.`);
-        }
-
-        // 3. Vérifier le solde
-        const userRes = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
-        if (parseFloat(userRes.rows[0].balance) < machine.prix) throw new Error("Solde insuffisant");
-
-        // 4. Transaction
-        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [machine.prix, id_public_user]);
-        await client.query(`
-            INSERT INTO investissements (id_public_user, nom_machine, prix_achat, gain_quotidien, duree_jours, jours_restants)
-            VALUES ($1, $2, $3, $4, $5, $6)`, 
-            [id_public_user, machine.nom, machine.prix, machine.gain, machine.duree, machine.duree]
-        );
-
-        await client.query('COMMIT');
-        res.json({ success: true, message: "Achat réussi !" });
-    } catch (e) {
-        await client.query('ROLLBACK');
-        res.status(400).json({ success: false, message: e.message });
-    } finally { client.release(); }
-});
 
 
 // (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
