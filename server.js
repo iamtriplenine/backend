@@ -66,28 +66,7 @@ await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage
 
 
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
-// Crée la table qui stocke les modèles de machines configurés par l'admin
-await pool.query(`
-    CREATE TABLE IF NOT EXISTS config_machines (
-        id_machine TEXT PRIMARY KEY,
-        nom TEXT,
-        prix DECIMAL(15,2),
-        gain DECIMAL(15,2),
-        duree INTEGER,
-        limite INTEGER
-    );
-`);
 
-// Crée la table qui enregistre quel utilisateur a acheté quelle machine
-await pool.query(`
-    CREATE TABLE IF NOT EXISTS investissements_actifs (
-        id SERIAL PRIMARY KEY,
-        id_public_user VARCHAR(6),
-        id_machine TEXT,
-        date_achat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        expire_le TIMESTAMP
-    );
-`);
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
 
 
@@ -625,93 +604,6 @@ app.get('/config/taux-parrainage', async (req, res) => {
 
 
 // --- ROUTES ADMIN : GESTION DU CATALOGUE ---
-app.post('/admin/upsert-machine', async (req, res) => {
-    const { cle, id_machine, nom, prix, gain, duree, limite } = req.body;
-    
-    // Vérification de sécurité
-    if(cle !== "999") return res.status(403).send("Clé Admin incorrecte");
-    
-    // Vérification des données reçues
-    if(!id_machine || !nom || !prix) {
-        return res.status(400).send("Données manquantes (ID, Nom ou Prix)");
-    }
-
-    try {
-        await pool.query(
-            `INSERT INTO config_machines (id_machine, nom, prix, gain, duree, limite) 
-             VALUES ($1, $2, $3, $4, $5, $6) 
-             ON CONFLICT (id_machine) DO UPDATE SET 
-                nom = EXCLUDED.nom, 
-                prix = EXCLUDED.prix, 
-                gain = EXCLUDED.gain, 
-                duree = EXCLUDED.duree, 
-                limite = EXCLUDED.limite`,
-            [id_machine, nom, prix, gain, duree, limite]
-        );
-        res.json({ success: true });
-    } catch (e) { 
-        console.error("ERREUR SQL UPSERT:", e.message);
-        res.status(500).send("Erreur SQL: " + e.message); 
-    }
-});
-
-
-app.get('/get-machines-publiques', async (req, res) => {
-    try {
-        const r = await pool.query("SELECT * FROM config_machines");
-        res.json(r.rows);
-    } catch (e) { res.status(500).json([]); }
-});
-
-app.post('/investir/acheter', async (req, res) => {
-    const { id_public_user, machine_type } = req.body;
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        
-        // 1. Récupérer les infos de la machine
-        const m = await client.query("SELECT * FROM config_machines WHERE id_machine = $1", [machine_type]);
-        if(m.rows.length === 0) throw new Error("Machine introuvable");
-        const machine = m.rows[0];
-
-        // 2. Vérifier le solde de l'utilisateur
-        const u = await client.query("SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE", [id_public_user]);
-        if(parseFloat(u.rows[0].balance) < machine.prix) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: "Solde insuffisant" });
-        }
-
-        // 3. Déduire le prix et enregistrer l'achat
-        await client.query("UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2", [machine.prix, id_public_user]);
-        const exp = new Date(); 
-        exp.setDate(exp.getDate() + parseInt(machine.duree));
-        
-        await client.query(
-            "INSERT INTO investissements_actifs (id_public_user, id_machine, expire_le) VALUES ($1, $2, $3)", 
-            [id_public_user, machine_type, exp]
-        );
-        
-        await client.query('COMMIT');
-        res.json({ success: true });
-    } catch (e) { 
-        await client.query('ROLLBACK'); 
-        res.status(500).json({ message: e.message }); 
-    } finally { client.release(); }
-});
-
-
-
-app.post('/admin/delete-config-machine', async (req, res) => {
-    const { cle, id_machine } = req.body;
-    if(cle !== "999") return res.status(403).send("Refusé");
-    try {
-        await pool.query("DELETE FROM config_machines WHERE id_machine = $1", [id_machine]);
-        res.json({ success: true });
-    } catch (e) { 
-        console.error(e);
-        res.status(500).json({ success: false, message: e.message }); 
-    }
-});
 
 
 
