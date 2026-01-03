@@ -654,6 +654,22 @@ app.get('/config/taux-parrainage', async (req, res) => {
    NOUVEAU : SYSTÈME D'INVESTISSEMENT (MACHINES)
    ========================================================= */
 
+
+
+app.get('/user/machines/:id_public', async (req, res) => {
+    try {
+        const r = await pool.query(
+            "SELECT * FROM machines_achetees WHERE id_public_user = $1 AND statut = 'actif' ORDER BY id DESC", 
+            [req.params.id_public]
+        );
+        res.json(r.rows);
+    } catch (e) {
+        res.status(500).json([]);
+    }
+});
+
+
+
 // 1. Définition des machines disponibles
 const CATALOGUE_MACHINES = [
     { id: 1, nom: "Pack Bronze", prix: 100, gain: 5, duree: 30 },
