@@ -66,7 +66,20 @@ await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage
 
 
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
-
+// TABLE DES MACHINES ACHETÉES PAR LES UTILISATEURS
+await pool.query(`
+    CREATE TABLE IF NOT EXISTS machines_achetees (
+        id SERIAL PRIMARY KEY,
+        id_public_user VARCHAR(6),
+        nom_machine TEXT,
+        prix_achat DECIMAL(15,2),
+        gain_quotidien DECIMAL(15,2),
+        date_achat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        date_fin TIMESTAMP,
+        dernier_recolte TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        statut TEXT DEFAULT 'actif'
+    );
+`);
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
 
 
@@ -100,6 +113,22 @@ for (let row of anciens.rows) {
     } catch (err) { console.log("Erreur lors de l'initialisation:", err); }
 };
 initDB();
+
+
+
+/* --- CATALOGUE DES MACHINES (MODIFIABLE ICI) --- */
+const CATALOGUE_MACHINES = [
+    { id: "M1", nom: "MICRO-S3", prix: 500, gain: 50, duree: 15, limite: 5 },
+    { id: "M2", nom: "CORE-X9", prix: 2000, gain: 250, duree: 20, limite: 2 },
+    { id: "M3", nom: "ULTRA-SERVER", prix: 10000, gain: 1500, duree: 10, limite: 1 }
+];
+
+// Route pour envoyer le catalogue au client
+app.get('/machines/catalogue', (req, res) => {
+    res.json(CATALOGUE_MACHINES);
+});
+
+
 
 
 
