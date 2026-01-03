@@ -685,6 +685,23 @@ app.post('/investir/acheter', async (req, res) => {
 
 
 
+app.post('/admin/delete-config-machine', async (req, res) => {
+    const { cle, id_machine } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    try {
+        await pool.query("DELETE FROM config_machines WHERE id_machine = $1", [id_machine]);
+        res.json({ success: true });
+    } catch (e) { 
+        console.error(e);
+        res.status(500).json({ success: false, message: e.message }); 
+    }
+});
+
+
+
+
+
+
 
 
 
