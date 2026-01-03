@@ -543,9 +543,9 @@ app.post('/admin/supprimer-user', async (req, res) => {
 // (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
 
 
+// --- SECTION : SYSTÈME DE MACHINES (BOUTIQUE & UTILISATEUR) ---
 
-/** * ROUTE : Récupérer le catalogue pour la boutique
- */
+// Récupérer le catalogue pour la boutique (avec info si l'user possède déjà la machine)
 app.get('/machines-disponibles', async (req, res) => {
     const { id_public } = req.query;
     try {
@@ -558,9 +558,7 @@ app.get('/machines-disponibles', async (req, res) => {
     } catch (e) { res.status(500).json([]); }
 });
 
-/** * ROUTE : Calculer et récupérer les machines d'un utilisateur
- * Cette route calcule les gains "en direct" basés sur le temps écoulé
- */
+// Calculer et récupérer les machines d'un utilisateur (Gains en direct)
 app.get('/user/mes-machines/:id_public', async (req, res) => {
     try {
         const query = `
@@ -571,32 +569,93 @@ app.get('/user/mes-machines/:id_public', async (req, res) => {
         `;
         const result = await pool.query(query, [req.params.id_public]);
         
-        let totalGainsHistoriques = 0;
         const machinesCalculees = result.rows.map(m => {
-            // Calcul du gain depuis le dernier retrait ou l'achat
             const debut = new Date(m.dernier_retrait_gain);
             const maintenant = new Date();
             const heuresEcoulees = (maintenant - debut) / (1000 * 60 * 60);
-            
-            // Gain par heure = gain_jour / 24
             const gainParHeure = parseFloat(m.gain_jour) / 24;
             const gainActuel = heuresEcoulees * gainParHeure;
-
-            totalGainsHistoriques += parseFloat(m.gains_collectes);
 
             return {
                 ...m,
                 gain_actuel_non_collecte: gainActuel.toFixed(2)
             };
         });
-
-        res.json({
-            totalGainsHistoriques: totalGainsHistoriques,
-            machines: machinesCalculees
-        });
-    } catch (e) { res.status(500).json({ machines: [] }); }
+        res.json(machinesCalculees);
+    } catch (e) { res.status(500).json([]); }
 });
 
+// Acheter une machine
+app.post('/acheter-machine', async (req, res) => {
+    const { id_public_user, id_machine } = req.body;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const machineRes = await client.query('SELECT * FROM catalogue_machines WHERE id = $1', [id_machine]);
+        const machine = machineRes.rows[0];
+
+        const userRes = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
+        const solde = parseFloat(userRes.rows[0].balance);
+
+        if (solde < machine.prix) throw new Error("Solde insuffisant");
+
+        const achatRes = await client.query('SELECT COUNT(*) FROM machines_utilisateurs WHERE id_public_user = $1 AND id_machine = $2', [id_public_user, id_machine]);
+        if (parseInt(achatRes.rows[0].count) >= machine.limite_achat) throw new Error("Limite d'achat atteinte");
+
+        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [machine.prix, id_public_user]);
+        await client.query('INSERT INTO machines_utilisateurs (id_public_user, id_machine) VALUES ($1, $2)', [id_public_user, id_machine]);
+        
+        await client.query('INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)',
+            [id_public_user, `BUY-${Date.now()}`, machine.prix, `Achat Machine: ${machine.nom}`]);
+
+        await client.query('COMMIT');
+        res.json({ success: true });
+    } catch (e) {
+        await client.query('ROLLBACK');
+        res.status(400).json({ success: false, message: e.message });
+    } finally { client.release(); }
+});
+
+
+
+
+
+// Récolter les gains accumulés d'une machine vers la balance principale
+app.post('/recolter-gains-machine', async (req, res) => {
+    const { id_public_user, id_instance_machine } = req.body;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        
+        // 1. Récupérer l'instance de la machine et son gain journalier
+        const resMachine = await client.query(`
+            SELECT mu.*, c.gain_jour 
+            FROM machines_utilisateurs mu 
+            JOIN catalogue_machines c ON mu.id_machine = c.id 
+            WHERE mu.id = $1 AND mu.id_public_user = $2`, [id_instance_machine, id_public_user]);
+        
+        if(resMachine.rows.length === 0) throw new Error("Machine introuvable");
+        const m = resMachine.rows[0];
+
+        // 2. Calculer le gain depuis le dernier retrait
+        const debut = new Date(m.dernier_retrait_gain);
+        const maintenant = new Date();
+        const heuresEcoulees = (maintenant - debut) / (1000 * 60 * 60);
+        const gainARecolter = (heuresEcoulees * (parseFloat(m.gain_jour) / 24));
+
+        if(gainARecolter < 1) throw new Error("Gain trop faible pour être récolté");
+
+        // 3. Update Balance + Update Machine (Reset date dernier retrait)
+        await client.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [gainARecolter, id_public_user]);
+        await client.query('UPDATE machines_utilisateurs SET dernier_retrait_gain = CURRENT_TIMESTAMP, gains_collectes = gains_collectes + $1 WHERE id = $2', [gainARecolter, id_instance_machine]);
+
+        await client.query('COMMIT');
+        res.json({ success: true, gain: gainARecolter.toFixed(2) });
+    } catch (e) {
+        await client.query('ROLLBACK');
+        res.status(400).json({ success: false, message: e.message });
+    } finally { client.release(); }
+});
 
 // (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
 
@@ -669,8 +728,41 @@ app.get('/config/taux-parrainage', async (req, res) => {
     } catch (e) { res.json({ taux: 40 }); }
 });
 
+// --- ROUTES ADMIN : GESTION DU CATALOGUE ---
 
+// Lister toutes les machines pour l'admin
+app.get('/admin/machines', async (req, res) => {
+    try {
+        const machines = await pool.query('SELECT * FROM catalogue_machines ORDER BY id ASC');
+        res.json(machines.rows);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
+// Ajouter ou Modifier une machine
+app.post('/admin/config-machine', async (req, res) => {
+    const { cle, id, nom, prix, gain_jour, cycle_jours, limite_achat } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    try {
+        if(id) {
+            await pool.query('UPDATE catalogue_machines SET nom=$1, prix=$2, gain_jour=$3, cycle_jours=$4, limite_achat=$5 WHERE id=$6',
+                [nom, prix, gain_jour, cycle_jours, limite_achat, id]);
+        } else {
+            await pool.query('INSERT INTO catalogue_machines (nom, prix, gain_jour, cycle_jours, limite_achat) VALUES ($1, $2, $3, $4, $5)',
+                [nom, prix, gain_jour, cycle_jours, limite_achat]);
+        }
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Supprimer une machine
+app.post('/admin/delete-machine', async (req, res) => {
+    const { cle, id } = req.body;
+    if(cle !== "999") return res.status(403).send("Refusé");
+    try {
+        await pool.query('DELETE FROM catalogue_machines WHERE id = $1', [id]);
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: "Impossible (liée à des achats)" }); }
+});
 
 
 
