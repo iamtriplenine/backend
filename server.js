@@ -43,6 +43,27 @@ const initDB = async () => {
             );
            
         `);
+
+
+
+// --- AJOUTER CECI DANS initDB() ---
+await pool.query(`
+    CREATE TABLE IF NOT EXISTS machines_achetees (
+        id SERIAL PRIMARY KEY,
+        id_public_user VARCHAR(6),
+        nom_machine TEXT,
+        prix_achat DECIMAL(15,2),
+        gain_quotidien DECIMAL(15,2),
+        date_achat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        date_fin TIMESTAMP,
+        dernier_retrait_gain DATE DEFAULT CURRENT_DATE,
+        statut TEXT DEFAULT 'actif'
+    );
+`);
+
+
+
+               
 // 
             // Ajoute la colonne pour stocker le minage (Mega Coins)
 await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
@@ -629,6 +650,95 @@ app.get('/config/taux-parrainage', async (req, res) => {
 
 
 // --- ROUTES ADMIN : GESTION DU CATALOGUE ---
+/* =========================================================
+   NOUVEAU : SYSTÈME D'INVESTISSEMENT (MACHINES)
+   ========================================================= */
+
+// 1. Définition des machines disponibles
+const CATALOGUE_MACHINES = [
+    { id: 1, nom: "Pack Bronze", prix: 1000, gain: 50, duree: 30 },
+    { id: 2, nom: "Pack Silver", prix: 5000, gain: 300, duree: 45 },
+    { id: 3, nom: "Pack Gold", prix: 20000, gain: 1500, duree: 60 }
+];
+
+// 2. Route pour gérer l'achat d'une machine
+app.post('/buy-machine', async (req, res) => {
+    const { id_public_user, machine_id } = req.body;
+    const machine = CATALOGUE_MACHINES.find(m => m.id === machine_id);
+    
+    if (!machine) return res.status(404).json({ message: "Machine non trouvée" });
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Vérification du solde de l'utilisateur
+        const user = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
+        if (parseFloat(user.rows[0].balance) < machine.prix) {
+            throw new Error("Solde insuffisant pour cet investissement");
+        }
+
+        // Calcul de la date d'expiration
+        const dateFin = new Date();
+        dateFin.setDate(dateFin.getDate() + machine.duree);
+
+        // Débit du compte
+        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [machine.prix, id_public_user]);
+
+        // Enregistrement dans l'historique des transactions
+        await client.query(
+            `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`,
+            [id_public_user, `INV-${Date.now()}`, machine.prix, `Achat machine : ${machine.nom} (30j)`]
+        );
+
+        await client.query('COMMIT');
+        res.json({ success: true, message: `Félicitations ! Vous avez activé le ${machine.nom}.` });
+
+    } catch (e) {
+        await client.query('ROLLBACK');
+        res.status(400).json({ message: e.message });
+    } finally {
+        client.release();
+    }
+});
+
+
+
+
+// Script pour distribuer les gains quotidiens automatiquement
+const distribuerGains = async () => {
+    try {
+        console.log("💰 Distribution des gains des machines en cours...");
+        // On cherche les machines actives qui n'ont pas encore rapporté aujourd'hui
+        const machines = await pool.query(`
+            SELECT * FROM machines_achetees 
+            WHERE statut = 'actif' 
+            AND date_fin > CURRENT_TIMESTAMP 
+            AND dernier_retrait_gain < CURRENT_DATE
+        `);
+
+        for (let machine of machines.rows) {
+            await pool.query('BEGIN');
+            // 1. Ajouter le gain au solde de l'utilisateur
+            await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [machine.gain_quotidien, machine.id_public_user]);
+            // 2. Marquer que le gain du jour est payé
+            await pool.query('UPDATE machines_achetees SET dernier_retrait_gain = CURRENT_DATE WHERE id = $1', [machine.id]);
+            await pool.query('COMMIT');
+        }
+        console.log("✅ Gains distribués avec succès.");
+    } catch (e) {
+        console.error("❌ Erreur distribution gains:", e);
+    }
+};
+
+// Exécuter la distribution toutes les 24 heures
+setInterval(distribuerGains, 1000 * 60 * 60 * 24);
+// Lancer aussi au démarrage
+distribuerGains();
+
+
+
+
 
 
 
