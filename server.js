@@ -728,7 +728,33 @@ app.post('/admin/force-distribution/:cle', async (req, res) => {
 });
 
 
+// --- RÉCUPÉRATION DES STATS D'INVESTISSEMENT ---
+app.get('/user/machines-stats/:id_public', async (req, res) => {
+    try {
+        const machines = await pool.query(
+            "SELECT * FROM machines_achetees WHERE id_public_user = $1 ORDER BY id DESC", 
+            [req.params.id_public]
+        );
 
+        const stats = await pool.query(`
+            SELECT 
+                COUNT(*) as nb_machines, 
+                COALESCE(SUM(gain_quotidien), 0) as gains_par_jour 
+            FROM machines_achetees 
+            WHERE id_public_user = $1 AND statut = 'actif'
+        `, [req.params.id_public]);
+
+        res.json({
+            liste: machines.rows,
+            stats: {
+                nb_machines: stats.rows[0].nb_machines,
+                gains_par_jour: stats.rows[0].gains_par_jour
+            }
+        });
+    } catch (e) {
+        res.status(500).json({ message: "Erreur stats" });
+    }
+});
 
 
 
