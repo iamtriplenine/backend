@@ -656,7 +656,7 @@ app.get('/config/taux-parrainage', async (req, res) => {
 
 // 1. Définition des machines disponibles
 const CATALOGUE_MACHINES = [
-    { id: 1, nom: "Pack Bronze", prix: 1000, gain: 50, duree: 30 },
+    { id: 1, nom: "Pack Bronze", prix: 100, gain: 5, duree: 30 },
     { id: 2, nom: "Pack Silver", prix: 5000, gain: 300, duree: 45 },
     { id: 3, nom: "Pack Gold", prix: 20000, gain: 1500, duree: 60 }
 ];
