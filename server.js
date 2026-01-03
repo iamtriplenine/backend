@@ -313,62 +313,6 @@ app.post('/admin/convertir-minage', async (req, res) => {
 // --- SECTION : ACHAT DE MACHINES D'INVESTISSEMENT ---
 // ---------------------------------------------------------
 
-app.post('/buy-machine', async (req, res) => {
-    const { id_public_user, machine_id } = req.body;
-    const client = await pool.connect();
-
-    try {
-        // 1. Trouver la machine dans le catalogue
-        const machineInfos = CATALOGUE_MACHINES.find(m => m.id === machine_id);
-        if (!machineInfos) return res.status(404).json({ message: "Machine introuvable" });
-
-        await client.query('BEGIN');
-
-        // 2. Vérifier le solde de l'utilisateur
-        const userRes = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
-        if (userRes.rows.length === 0) throw new Error("Utilisateur inexistant");
-        
-        const soldeActuel = parseFloat(userRes.rows[0].balance);
-        if (soldeActuel < machineInfos.prix) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: "Solde insuffisant" });
-        }
-
-        // 3. Vérifier la limite d'achat pour cette machine
-        const countRes = await client.query(
-            'SELECT COUNT(*) FROM machines_achetees WHERE id_public_user = $1 AND nom_machine = $2 AND statut = $3',
-            [id_public_user, machineInfos.nom, 'actif']
-        );
-        
-        if (parseInt(countRes.rows[0].count) >= machineInfos.limite) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: `Limite atteinte (${machineInfos.limite} max)` });
-        }
-
-        // 4. Calculer la date de fin (Date d'achat + X jours)
-        const dateFin = new Date();
-        dateFin.setDate(dateFin.getDate() + machineInfos.duree);
-
-        // 5. Débiter le compte et enregistrer la machine
-        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [machineInfos.prix, id_public_user]);
-        
-        await client.query(
-            `INSERT INTO machines_achetees (id_public_user, nom_machine, prix_achat, gain_quotidien, date_fin) 
-             VALUES ($1, $2, $3, $4, $5)`,
-            [id_public_user, machineInfos.nom, machineInfos.prix, machineInfos.gain, dateFin]
-        );
-
-        await client.query('COMMIT');
-        res.json({ success: true, message: `Achat réussi : ${machineInfos.nom} est activée !` });
-
-    } catch (e) {
-        await client.query('ROLLBACK');
-        console.error(e);
-        res.status(500).json({ message: "Erreur lors de l'achat" });
-    } finally {
-        client.release();
-    }
-});
 
 
 
