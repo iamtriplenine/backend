@@ -628,33 +628,43 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 
 // Route mise à jour pour garantir un retour propre (tableau vide au lieu de undefined)
-// Route pour récupérer les affiliés avec le cumul de leurs dépôts
+/**
+ * ROUTE : Récupérer les affiliés d'un utilisateur spécifique
+ * Cette route est utilisée par la page "Invités" de l'utilisateur
+ */
 app.get('/user/affilies/:id_public', (req, res) => {
     const { id_public } = req.params;
 
-    // 1. Trouver l'utilisateur (le parrain) pour avoir son code_promo
+    // 1. On cherche d'abord l'utilisateur qui demande la liste (le parrain)
     const parrain = users.find(u => u.id_public === id_public);
-    if (!parrain) return res.json([]);
+    
+    if (!parrain) {
+        return res.status(404).json({ message: "Utilisateur non trouvé" });
+    }
 
-    // 2. Filtrer les utilisateurs qui ont ce parrain_code
-    const mesAffilies = users.filter(u => u.parrain_code === parrain.code_promo);
+    // 2. On récupère TOUS les utilisateurs dont le parrain_code correspond au code_promo du parrain
+    // On transforme les codes en Majuscules pour éviter les erreurs de saisie (a1b2 vs A1B2)
+    const codeCherche = parrain.code_promo.toString().toUpperCase();
 
-    // 3. Pour chaque affilié, calculer la somme de ses dépôts validés
-    const listeAvecGains = mesAffilies.map(affilie => {
+    const mesAffilies = users.filter(u => 
+        u.parrain_code && u.parrain_code.toString().toUpperCase() === codeCherche
+    );
+
+    // 3. Pour chaque affilié trouvé, on calcule le total de ses dépôts VALIDÉS
+    const resultatFinal = mesAffilies.map(ami => {
         const totalDepose = transactions
-            .filter(t => t.id_public_user === affilie.id_public && t.statut === 'validé')
-            .reduce((acc, t) => acc + parseFloat(t.montant), 0);
+            .filter(t => t.id_public_user === ami.id_public && t.statut === 'validé')
+            .reduce((acc, t) => acc + parseFloat(t.montant || 0), 0);
 
         return {
-            id_public: affilie.id_public,
-            username: affilie.username,
-            total_depose: totalDepose // C'est cette valeur que le frontend utilisera
+            id_public: ami.id_public,
+            username: ami.username,
+            total_depose: totalDepose // Indispensable pour l'affichage des gains
         };
     });
 
-    res.json(listeAvecGains);
+    res.json(resultatFinal);
 });
-
 
 
 
