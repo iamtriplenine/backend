@@ -54,55 +54,11 @@ await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balan
         await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS dernier_code_utilise TEXT DEFAULT '';`);
         // Initialisation du code par défaut si la table est vide
         await pool.query(`INSERT INTO config_globale (cle, valeur, montant) VALUES ('code_journalier', 'MEGA2025', 50) ON CONFLICT DO NOTHING;`);
-
-       // --- INITIALISATION DU TAUX DE PARRAINAGE ---
-// Crée la variable dans la base de données avec 40% par défaut
-await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage_parrain', 40) ON CONFLICT DO NOTHING;`);
-
-
-
-
-
-
-// --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
-
-
-// --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
-
-
-
-
-
-
         
-
-
-
-
-
-// 1. On crée la colonne wallet_address pour tout le monde
-await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS wallet_address TEXT UNIQUE;`);
-
-// 2. On donne une adresse aux anciens qui n'en ont pas encore
-const anciens = await pool.query(`SELECT id_public FROM utilisateurs WHERE wallet_address IS NULL`);
-for (let row of anciens.rows) {
-    const adr = '0x' + Math.random().toString(16).slice(2, 10).toUpperCase();
-    await pool.query(`UPDATE utilisateurs SET wallet_address = $1 WHERE id_public = $2`, [adr, row.id_public]);
-}
-
-
-
-
-           
-           
-      
         console.log("✅ Serveur prêt et Base de données synchronisée");
     } catch (err) { console.log("Erreur lors de l'initialisation:", err); }
 };
 initDB();
-
-
-
 
 // --- PETIT OUTIL POUR GÉNÉRER DES CODES (ID PUBLIC, ETC.) ---
 const genererCode = (long) => Math.floor(Math.pow(10, long-1) + Math.random() * 9 * Math.pow(10, long-1)).toString();
@@ -116,41 +72,21 @@ app.post('/register', async (req, res) => {
     try {
         const id_p = genererCode(6);
         const mon_p = genererCode(4);
-
-        // --- AJOUT : Génération de l'adresse de transfert interne ---
-        const wallet_adr = '0x' + Math.random().toString(16).slice(2, 10).toUpperCase();
-
         await pool.query(
-            `INSERT INTO utilisateurs (id_public, telephone, password, username, code_promo, parrain_code, wallet_address) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-            [id_p, telephone, password, username, mon_p, promo_parrain, wallet_adr]
+            `INSERT INTO utilisateurs (id_public, telephone, password, username, code_promo, parrain_code) VALUES ($1,$2,$3,$4,$5,$6)`,
+            [id_p, telephone, password, username, mon_p, promo_parrain]
         );
-        
         res.json({ success: true, id: id_p, promo: mon_p });
-    } catch (e) { 
-        res.status(500).json({ success: false, message: "Numéro déjà pris ou erreur serveur." }); 
-    }
+    } catch (e) { res.status(500).json({ success: false, message: "Numéro déjà pris." }); }
 });
-
-
-
-
-
-
 
 app.post('/login', async (req, res) => {
     const { telephone, password } = req.body;
     try {
-        // Le SELECT * récupère maintenant aussi la colonne wallet_address que nous avons ajoutée
         const u = await pool.query('SELECT * FROM utilisateurs WHERE telephone = $1 AND password = $2', [telephone, password]);
-        
-        if (u.rows.length > 0) {
-            res.json({ success: true, user: u.rows[0] });
-        } else {
-            res.status(401).json({ success: false, message: "Identifiants incorrects" });
-        }
-    } catch (e) { 
-        res.status(500).json({ success: false, message: "Erreur serveur lors de la connexion" }); 
-    }
+        if (u.rows.length > 0) res.json({ success: true, user: u.rows[0] });
+        else res.status(401).json({ success: false, message: "Identifiants incorrects" });
+    } catch (e) { res.status(500).json({ success: false }); }
 });
 
 // ---------------------------------------------------------
@@ -304,102 +240,12 @@ app.post('/admin/convertir-minage', async (req, res) => {
 
 
 
-// ---------------------------------------------------------
-// --- SECTION : TRANSFERT ENTRE PORTEFEUILLES (WALLET) ---
-// ---------------------------------------------------------
-
-// --- SECTION : TRANSFERT ENTRE PORTEFEUILLES (MIS À JOUR POUR DOUBLE HISTORIQUE) ---
-app.post('/transfert-wallet', async (req, res) => {
-    const { id_public_expediteur, adresse_destinataire, montant } = req.body;
-    const client = await pool.connect();
-
-    try {
-        await client.query('BEGIN');
-
-        // 1. Vérifier l'expéditeur et son solde
-        const expRes = await client.query('SELECT id_public, balance, wallet_address FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_expediteur]);
-        if (expRes.rows.length === 0) throw new Error("Expéditeur introuvable");
-        
-        const soldeExp = parseFloat(expRes.rows[0].balance);
-        if (soldeExp < montant) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ success: false, message: "Solde insuffisant" });
-        }
-
-        // 2. Vérifier le destinataire par son adresse
-        const destRes = await client.query('SELECT id_public, balance FROM utilisateurs WHERE wallet_address = $1 FOR UPDATE', [adresse_destinataire]);
-        if (destRes.rows.length === 0) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ success: false, message: "Adresse destinataire invalide" });
-        }
-        const id_dest = destRes.rows[0].id_public;
-
-        // Sécurité : Interdire l'envoi à soi-même
-        if (expRes.rows[0].wallet_address === adresse_destinataire) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ success: false, message: "Envoi à soi-même interdit" });
-        }
-
-        // 3. Mouvement d'argent
-        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [montant, id_public_expediteur]);
-        await client.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [montant, id_dest]);
-
-        // 4. DOUBLE ENREGISTREMENT DANS L'HISTORIQUE
-        const temps = Date.now();
-        
-        // A. Pour l'expéditeur (Moins d'argent)
-        await client.query(
-            `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`,
-            [id_public_expediteur, `TRF-OUT-${temps}`, montant, `Transfert vers ${adresse_destinataire}`]
-        );
-
-        // B. Pour le destinataire (Plus d'argent)
-        // On utilise l'adresse de l'expéditeur pour que le receveur sache d'où ça vient
-        await client.query(
-            `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`,
-            [id_dest, `TRF-IN-${temps}`, montant, `Reçu de ${expRes.rows[0].wallet_address}`]
-        );
-
-        await client.query('COMMIT');
-        res.json({ success: true, message: "Transfert réussi" });
-
-    } catch (e) {
-        await client.query('ROLLBACK');
-        res.status(500).json({ success: false, message: "Erreur technique" });
-    } finally {
-        client.release();
-    }
-});
-
-
-
-
 
 
 
 // ---------------------------------------------------------
 // --- SECTION : ADMINISTRATION ---
 // ---------------------------------------------------------
-
-// --- MODIFICATION DU TAUX PAR L'ADMIN ---
-// Met à jour la valeur du pourcentage dans la base de données
-app.post('/admin/update-config-taux', async (req, res) => {
-    const { cle, nouveau_taux } = req.body;
-    if(cle !== "999") return res.status(403).send("Refusé");
-    try {
-        await pool.query("UPDATE config_globale SET montant = $1 WHERE cle = 'pourcentage_parrain'", [nouveau_taux]);
-        res.json({ success: true });
-    } catch (e) { res.status(500).send("Erreur"); }
-});
-
-
-
-
-
-
-
-
-
 
 // Met à jour le code secret et le montant. Dès que tu valides, l'ancien code ne fonctionne plus.
 app.post('/admin/update-bonus-code', async (req, res) => {
@@ -424,49 +270,20 @@ app.get('/admin/transactions/:cle', async (req,res) => {
     res.json(r.rows);
 });
 
-
-
-
-
 // Valider un dépôt (Ajoute l'argent au client + Bonus Parrain 40%)
-
-// --- VALIDATION DE DÉPÔT AVEC CALCUL DYNAMIQUE ---
 app.post('/admin/valider-depot', async (req, res) => {
     const { cle, transaction_db_id, id_public_user, montant } = req.body;
     if(cle !== "999") return res.status(403).send("Refusé");
     try {
-        await pool.query('BEGIN');
-        
-        // 1. Créditer le client
         await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [montant, id_public_user]);
-
-        // 2. Chercher le taux actuel en base de données
-        const configRes = await pool.query("SELECT montant FROM config_globale WHERE cle = 'pourcentage_parrain'");
-        const tauxActuel = (configRes.rows.length > 0 ? parseFloat(configRes.rows[0].montant) : 40) / 100;
-
-        // 3. Verser le bonus au parrain si il existe
         const user = await pool.query('SELECT parrain_code FROM utilisateurs WHERE id_public = $1', [id_public_user]);
         if (user.rows[0]?.parrain_code) {
-            const bonus = parseFloat(montant) * tauxActuel;
-            await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE code_promo = $2', [bonus, user.rows[0].parrain_code]);
+            await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE code_promo = $2', [montant * 0.40, user.rows[0].parrain_code]);
         }
-        
-        // 4. Valider la transaction
         await pool.query("UPDATE transactions SET statut = 'validé' WHERE id = $1", [transaction_db_id]);
-        
-        await pool.query('COMMIT');
         res.json({ success: true });
-    } catch (e) { 
-        await pool.query('ROLLBACK'); 
-        res.status(500).send("Erreur lors de la validation"); 
-    }
+    } catch (e) { res.status(500).send("Erreur"); }
 });
-
-
-
-
-
-
 
 // Valider un retrait (Marque juste comme payé)
 app.post('/admin/valider-retrait', async (req, res) => {
@@ -522,46 +339,22 @@ app.post('/admin/supprimer-user', async (req, res) => {
 });
 
 
-// (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
-
-
-
-
-
-
-// (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
 
 // --- SECTION : RÉCUPÉRATION DES AFFILIÉS ---
-
-
-// Route mise à jour pour garantir un retour propre (tableau vide au lieu de undefined)
 app.get('/user/affilies/:id_public', async (req, res) => {
     try {
+        // 1. On trouve d'abord le code promo de l'utilisateur
         const userRes = await pool.query('SELECT code_promo FROM utilisateurs WHERE id_public = $1', [req.params.id_public]);
         
-        if (userRes.rows.length === 0) {
-            return res.json([]); // Si l'user n'existe pas, on renvoie une liste vide
-        }
+        if (userRes.rows.length === 0) return res.status(404).json({ message: "Utilisateur non trouvé" });
         
         const monCodePromo = userRes.rows[0].code_promo;
 
+        // 2. On cherche tous les utilisateurs qui ont ce code comme 'parrain_code'
+        // On récupère leur ID public et la somme de leurs dépôts validés
         const affilies = await pool.query(`
             SELECT u.id_public, 
                    COALESCE(SUM(t.montant), 0) as total_depose
@@ -571,34 +364,15 @@ app.get('/user/affilies/:id_public', async (req, res) => {
             GROUP BY u.id_public
         `, [monCodePromo]);
 
-        // On renvoie les résultats, PostgreSQL renvoie un tableau vide .rows si rien n'est trouvé
-        res.json(affilies.rows); 
+        res.json(affilies.rows);
     } catch (e) {
         console.error(e);
-        res.status(500).json([]); // En cas d'erreur, on renvoie un tableau vide pour ne pas faire planter le client
+        res.status(500).json({ message: "Erreur lors de la récupération des affiliés" });
     }
 });
 
 
 
-
-
-
-
-
-
-
-
-
-// --- RÉCUPÉRATION DU TAUX POUR L'INTERFACE UTILISATEUR ---
-// Cette route permet à user.html d'afficher le bon pourcentage dynamiquement
-app.get('/config/taux-parrainage', async (req, res) => {
-    try {
-        const config = await pool.query("SELECT montant FROM config_globale WHERE cle = 'pourcentage_parrain'");
-        const taux = config.rows.length > 0 ? config.rows[0].montant : 40;
-        res.json({ taux: taux });
-    } catch (e) { res.json({ taux: 40 }); }
-});
 
 
 
