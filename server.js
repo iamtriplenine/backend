@@ -43,27 +43,6 @@ const initDB = async () => {
             );
            
         `);
-
-
-
-// --- AJOUTER CECI DANS initDB() ---
-await pool.query(`
-    CREATE TABLE IF NOT EXISTS machines_achetees (
-        id SERIAL PRIMARY KEY,
-        id_public_user VARCHAR(6),
-        nom_machine TEXT,
-        prix_achat DECIMAL(15,2),
-        gain_quotidien DECIMAL(15,2),
-        date_achat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        date_fin TIMESTAMP,
-        dernier_retrait_gain DATE DEFAULT CURRENT_DATE,
-        statut TEXT DEFAULT 'actif'
-    );
-`);
-
-
-
-               
 // 
             // Ajoute la colonne pour stocker le minage (Mega Coins)
 await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
@@ -334,6 +313,62 @@ app.post('/admin/convertir-minage', async (req, res) => {
 // --- SECTION : ACHAT DE MACHINES D'INVESTISSEMENT ---
 // ---------------------------------------------------------
 
+app.post('/buy-machine', async (req, res) => {
+    const { id_public_user, machine_id } = req.body;
+    const client = await pool.connect();
+
+    try {
+        // 1. Trouver la machine dans le catalogue
+        const machineInfos = CATALOGUE_MACHINES.find(m => m.id === machine_id);
+        if (!machineInfos) return res.status(404).json({ message: "Machine introuvable" });
+
+        await client.query('BEGIN');
+
+        // 2. Vérifier le solde de l'utilisateur
+        const userRes = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
+        if (userRes.rows.length === 0) throw new Error("Utilisateur inexistant");
+        
+        const soldeActuel = parseFloat(userRes.rows[0].balance);
+        if (soldeActuel < machineInfos.prix) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ message: "Solde insuffisant" });
+        }
+
+        // 3. Vérifier la limite d'achat pour cette machine
+        const countRes = await client.query(
+            'SELECT COUNT(*) FROM machines_achetees WHERE id_public_user = $1 AND nom_machine = $2 AND statut = $3',
+            [id_public_user, machineInfos.nom, 'actif']
+        );
+        
+        if (parseInt(countRes.rows[0].count) >= machineInfos.limite) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ message: `Limite atteinte (${machineInfos.limite} max)` });
+        }
+
+        // 4. Calculer la date de fin (Date d'achat + X jours)
+        const dateFin = new Date();
+        dateFin.setDate(dateFin.getDate() + machineInfos.duree);
+
+        // 5. Débiter le compte et enregistrer la machine
+        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [machineInfos.prix, id_public_user]);
+        
+        await client.query(
+            `INSERT INTO machines_achetees (id_public_user, nom_machine, prix_achat, gain_quotidien, date_fin) 
+             VALUES ($1, $2, $3, $4, $5)`,
+            [id_public_user, machineInfos.nom, machineInfos.prix, machineInfos.gain, dateFin]
+        );
+
+        await client.query('COMMIT');
+        res.json({ success: true, message: `Achat réussi : ${machineInfos.nom} est activée !` });
+
+    } catch (e) {
+        await client.query('ROLLBACK');
+        console.error(e);
+        res.status(500).json({ message: "Erreur lors de l'achat" });
+    } finally {
+        client.release();
+    }
+});
 
 
 
@@ -650,135 +685,6 @@ app.get('/config/taux-parrainage', async (req, res) => {
 
 
 // --- ROUTES ADMIN : GESTION DU CATALOGUE ---
-/* =========================================================
-   SYSTÈME D'INVESTISSEMENT (MACHINES)
-   ========================================================= */
-
-// 1. Définition des limites et prix (Catalogue central)
-const CATALOGUE_MACHINES = [
-    { id: 1, nom: "Pack Bronze", prix: 1000, gain: 50, duree: 30, limite: 5 },
-    { id: 2, nom: "Pack Silver", prix: 5000, gain: 300, duree: 45, limite: 2 },
-    { id: 3, nom: "Pack Gold", prix: 20000, gain: 1500, duree: 60, limite: 1 }
-];
-
-// 2. Route d'achat (Vérification Quota, Solde et Enregistrement)
-app.post('/buy-machine', async (req, res) => {
-    const { id_public_user, machine_id } = req.body;
-    
-    // On récupère la machine dans le catalogue par son ID
-    const machine = CATALOGUE_MACHINES.find(m => m.id === parseInt(machine_id));
-    
-    if (!machine) return res.status(404).json({ message: "Machine non trouvée." });
-
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-
-        // A. VERIFIER LE QUOTA (Combien l'utilisateur en possède déjà ?)
-        const countRes = await client.query(
-            "SELECT COUNT(*) FROM machines_achetees WHERE id_public_user = $1 AND nom_machine = $2 AND statut = 'actif'",
-            [id_public_user, machine.nom]
-        );
-        
-        // On compare avec la limite définie dans CATALOGUE_MACHINES
-        if (parseInt(countRes.rows[0].count) >= machine.limite) {
-            throw new Error(`Limite atteinte ! Max ${machine.limite} machines pour le ${machine.nom}.`);
-        }
-
-        // B. VERIFIER LE SOLDE
-        const user = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
-        if (!user.rows[0] || parseFloat(user.rows[0].balance) < machine.prix) {
-            throw new Error("Solde insuffisant pour cet achat.");
-        }
-
-        // C. CALCULER LA DATE DE FIN
-        const dateFin = new Date();
-        dateFin.setDate(dateFin.getDate() + machine.duree);
-
-        // D. EXECUTION : DEBITER + ENREGISTRER LA MACHINE + HISTORIQUE
-        
-        // Débit du solde
-        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [machine.prix, id_public_user]);
-        
-        // Insertion dans la table des machines (pour l'affichage "Mes Machines")
-        await client.query(
-            `INSERT INTO machines_achetees (id_public_user, nom_machine, prix_achat, gain_quotidien, date_fin) 
-             VALUES ($1, $2, $3, $4, $5)`,
-            [id_public_user, machine.nom, machine.prix, machine.gain, dateFin]
-        );
-
-        // Insertion dans l'historique général des transactions
-        await client.query(
-            `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`,
-            [id_public_user, `INV-${Date.now()}`, machine.prix, `Achat : ${machine.nom}`]
-        );
-
-        await client.query('COMMIT');
-        res.json({ success: true, message: "Achat validé et machine activée !" });
-
-    } catch (e) {
-        await client.query('ROLLBACK');
-        res.status(400).json({ message: e.message });
-    } finally {
-        client.release();
-    }
-});
-
-
-
-
-
-
-
-// 3. Route pour récupérer les machines (Indispensable pour l'onglet "Mes Machines")
-app.get('/user/machines/:id_public', async (req, res) => {
-    try {
-        const r = await pool.query(
-            "SELECT * FROM machines_achetees WHERE id_public_user = $1 AND statut = 'actif' ORDER BY id DESC", 
-            [req.params.id_public]
-        );
-        res.json(r.rows);
-    } catch (e) {
-        res.status(500).json([]);
-    }
-});
-
-
-
-// Script pour distribuer les gains quotidiens automatiquement
-const distribuerGains = async () => {
-    try {
-        console.log("💰 Distribution des gains des machines en cours...");
-        // On cherche les machines actives qui n'ont pas encore rapporté aujourd'hui
-        const machines = await pool.query(`
-            SELECT * FROM machines_achetees 
-            WHERE statut = 'actif' 
-            AND date_fin > CURRENT_TIMESTAMP 
-            AND dernier_retrait_gain < CURRENT_DATE
-        `);
-
-        for (let machine of machines.rows) {
-            await pool.query('BEGIN');
-            // 1. Ajouter le gain au solde de l'utilisateur
-            await pool.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [machine.gain_quotidien, machine.id_public_user]);
-            // 2. Marquer que le gain du jour est payé
-            await pool.query('UPDATE machines_achetees SET dernier_retrait_gain = CURRENT_DATE WHERE id = $1', [machine.id]);
-            await pool.query('COMMIT');
-        }
-        console.log("✅ Gains distribués avec succès.");
-    } catch (e) {
-        console.error("❌ Erreur distribution gains:", e);
-    }
-};
-
-// Exécuter la distribution toutes les 24 heures
-setInterval(distribuerGains, 1000 * 60 * 60 * 24);
-// Lancer aussi au démarrage
-distribuerGains();
-
-
-
-
 
 
 
