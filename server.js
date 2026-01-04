@@ -41,10 +41,9 @@ const initDB = async () => {
                 valeur TEXT,
                 montant DECIMAL(15,2)
             );
-           
         `);
-// 
-            // Ajoute la colonne pour stocker le minage (Mega Coins)
+
+// Ajoute la colonne pour stocker le minage (Mega Coins)
 await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
 
 
@@ -66,6 +65,7 @@ await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage
 
 
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
+
 
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
 
@@ -100,12 +100,6 @@ for (let row of anciens.rows) {
     } catch (err) { console.log("Erreur lors de l'initialisation:", err); }
 };
 initDB();
-
-
-
-
-
-
 
 
 
@@ -306,81 +300,6 @@ app.post('/admin/convertir-minage', async (req, res) => {
         res.status(500).send("Erreur conversion");
     }
 });
-
-
-
-// ---------------------------------------------------------
-// --- SECTION : ACHAT DE MACHINES D'INVESTISSEMENT ---
-// ---------------------------------------------------------
-
-app.post('/buy-machine', async (req, res) => {
-    const { id_public_user, machine_id } = req.body;
-    const client = await pool.connect();
-
-    try {
-        // 1. Trouver la machine dans le catalogue
-        const machineInfos = CATALOGUE_MACHINES.find(m => m.id === machine_id);
-        if (!machineInfos) return res.status(404).json({ message: "Machine introuvable" });
-
-        await client.query('BEGIN');
-
-        // 2. Vérifier le solde de l'utilisateur
-        const userRes = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
-        if (userRes.rows.length === 0) throw new Error("Utilisateur inexistant");
-        
-        const soldeActuel = parseFloat(userRes.rows[0].balance);
-        if (soldeActuel < machineInfos.prix) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: "Solde insuffisant" });
-        }
-
-        // 3. Vérifier la limite d'achat pour cette machine
-        const countRes = await client.query(
-            'SELECT COUNT(*) FROM machines_achetees WHERE id_public_user = $1 AND nom_machine = $2 AND statut = $3',
-            [id_public_user, machineInfos.nom, 'actif']
-        );
-        
-        if (parseInt(countRes.rows[0].count) >= machineInfos.limite) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: `Limite atteinte (${machineInfos.limite} max)` });
-        }
-
-        // 4. Calculer la date de fin (Date d'achat + X jours)
-        const dateFin = new Date();
-        dateFin.setDate(dateFin.getDate() + machineInfos.duree);
-
-        // 5. Débiter le compte et enregistrer la machine
-        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [machineInfos.prix, id_public_user]);
-        
-        await client.query(
-            `INSERT INTO machines_achetees (id_public_user, nom_machine, prix_achat, gain_quotidien, date_fin) 
-             VALUES ($1, $2, $3, $4, $5)`,
-            [id_public_user, machineInfos.nom, machineInfos.prix, machineInfos.gain, dateFin]
-        );
-
-        await client.query('COMMIT');
-        res.json({ success: true, message: `Achat réussi : ${machineInfos.nom} est activée !` });
-
-    } catch (e) {
-        await client.query('ROLLBACK');
-        console.error(e);
-        res.status(500).json({ message: "Erreur lors de l'achat" });
-    } finally {
-        client.release();
-    }
-});
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -605,6 +524,11 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 // (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
 
+
+
+
+
+
 // (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
 
 
@@ -628,40 +552,31 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 
 // Route mise à jour pour garantir un retour propre (tableau vide au lieu de undefined)
-// --- SECTION : RÉCUPÉRATION DES AFFILIÉS ---
 app.get('/user/affilies/:id_public', async (req, res) => {
-    try {
-        // 1. On cherche d'abord le code promo de celui qui demande (le parrain)
-        const userRes = await pool.query('SELECT code_promo FROM utilisateurs WHERE id_public = $1', [req.params.id_public]);
-        
-        if (userRes.rows.length === 0) {
-            return res.json([]); 
-        }
-        
-        const monCodePromo = userRes.rows[0].code_promo;
+    try {
+        const userRes = await pool.query('SELECT code_promo FROM utilisateurs WHERE id_public = $1', [req.params.id_public]);
+        
+        if (userRes.rows.length === 0) {
+            return res.json([]); // Si l'user n'existe pas, on renvoie une liste vide
+        }
+        
+        const monCodePromo = userRes.rows[0].code_promo;
 
-        // 2. On récupère la liste des gens parrainés
-        // IMPORTANT : On utilise LEFT JOIN pour afficher l'invité MÊME s'il n'a pas encore fait de dépôt
-        const affilies = await pool.query(`
-            SELECT 
-                u.id_public, 
-                u.username,
-                u.telephone,
-                COALESCE(SUM(t.montant), 0) as total_depose
-            FROM utilisateurs u
-            LEFT JOIN transactions t ON u.id_public = t.id_public_user AND t.statut = 'validé'
-            WHERE u.parrain_code = $1
-            GROUP BY u.id_public, u.username, u.telephone
-            ORDER BY u.id DESC
-        `, [monCodePromo]);
+        const affilies = await pool.query(`
+            SELECT u.id_public, 
+                   COALESCE(SUM(t.montant), 0) as total_depose
+            FROM utilisateurs u
+            LEFT JOIN transactions t ON u.id_public = t.id_public_user AND t.statut = 'validé'
+            WHERE u.parrain_code = $1
+            GROUP BY u.id_public
+        `, [monCodePromo]);
 
-        // On renvoie les lignes (le HTML attend un tableau d'objets)
-        res.json(affilies.rows); 
-        
-    } catch (e) {
-        console.error("Erreur serveur route affilies:", e);
-        res.status(500).json([]); // On renvoie un tableau vide pour éviter de bloquer l'affichage client
-    }
+        // On renvoie les résultats, PostgreSQL renvoie un tableau vide .rows si rien n'est trouvé
+        res.json(affilies.rows); 
+    } catch (e) {
+        console.error(e);
+        res.status(500).json([]); // En cas d'erreur, on renvoie un tableau vide pour ne pas faire planter le client
+    }
 });
 
 
@@ -692,14 +607,6 @@ app.get('/config/taux-parrainage', async (req, res) => {
 
 
 
-
-// --- ROUTES ADMIN : GESTION DU CATALOGUE ---
-
-
-
-
-
 // --- DÉMARRAGE DU SERVEUR ---
 const PORT = process.env.PORT || 10000;
-
 app.listen(PORT, () => console.log("🚀 Serveur Connecté sur port " + PORT));
