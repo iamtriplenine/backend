@@ -628,31 +628,40 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 
 // Route mise à jour pour garantir un retour propre (tableau vide au lieu de undefined)
+// --- SECTION : RÉCUPÉRATION DES AFFILIÉS ---
 app.get('/user/affilies/:id_public', async (req, res) => {
-    try {
-        const userRes = await pool.query('SELECT code_promo FROM utilisateurs WHERE id_public = $1', [req.params.id_public]);
-        
-        if (userRes.rows.length === 0) {
-            return res.json([]); // Si l'user n'existe pas, on renvoie une liste vide
-        }
-        
-        const monCodePromo = userRes.rows[0].code_promo;
+    try {
+        // 1. On cherche d'abord le code promo de celui qui demande (le parrain)
+        const userRes = await pool.query('SELECT code_promo FROM utilisateurs WHERE id_public = $1', [req.params.id_public]);
+        
+        if (userRes.rows.length === 0) {
+            return res.json([]); 
+        }
+        
+        const monCodePromo = userRes.rows[0].code_promo;
 
-        const affilies = await pool.query(`
-            SELECT u.id_public, 
-                   COALESCE(SUM(t.montant), 0) as total_depose
-            FROM utilisateurs u
-            LEFT JOIN transactions t ON u.id_public = t.id_public_user AND t.statut = 'validé'
-            WHERE u.parrain_code = $1
-            GROUP BY u.id_public
-        `, [monCodePromo]);
+        // 2. On récupère la liste des gens parrainés
+        // IMPORTANT : On utilise LEFT JOIN pour afficher l'invité MÊME s'il n'a pas encore fait de dépôt
+        const affilies = await pool.query(`
+            SELECT 
+                u.id_public, 
+                u.username,
+                u.telephone,
+                COALESCE(SUM(t.montant), 0) as total_depose
+            FROM utilisateurs u
+            LEFT JOIN transactions t ON u.id_public = t.id_public_user AND t.statut = 'validé'
+            WHERE u.parrain_code = $1
+            GROUP BY u.id_public, u.username, u.telephone
+            ORDER BY u.id DESC
+        `, [monCodePromo]);
 
-        // On renvoie les résultats, PostgreSQL renvoie un tableau vide .rows si rien n'est trouvé
-        res.json(affilies.rows); 
-    } catch (e) {
-        console.error(e);
-        res.status(500).json([]); // En cas d'erreur, on renvoie un tableau vide pour ne pas faire planter le client
-    }
+        // On renvoie les lignes (le HTML attend un tableau d'objets)
+        res.json(affilies.rows); 
+        
+    } catch (e) {
+        console.error("Erreur serveur route affilies:", e);
+        res.status(500).json([]); // On renvoie un tableau vide pour éviter de bloquer l'affichage client
+    }
 });
 
 
