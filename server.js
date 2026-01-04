@@ -651,49 +651,63 @@ app.get('/config/taux-parrainage', async (req, res) => {
 
 // --- ROUTES ADMIN : GESTION DU CATALOGUE ---
 /* =========================================================
-   NOUVEAU : SYSTÈME D'INVESTISSEMENT (MACHINES)
+   SYSTÈME D'INVESTISSEMENT (MACHINES)
    ========================================================= */
 
+// 1. Définition des limites et prix (Catalogue central)
+const CATALOGUE_MACHINES = [
+    { id: 1, nom: "Pack Bronze", prix: 1000, gain: 50, duree: 30, limite: 5 },
+    { id: 2, nom: "Pack Silver", prix: 5000, gain: 300, duree: 45, limite: 2 },
+    { id: 3, nom: "Pack Gold", prix: 20000, gain: 1500, duree: 60, limite: 1 }
+];
 
+// 2. Route d'achat (Vérification Quota, Solde et Enregistrement)
 app.post('/buy-machine', async (req, res) => {
     const { id_public_user, machine_id } = req.body;
-    const machine = CATALOGUE_MACHINES.find(m => m.id === machine_id);
     
-    // ON DÉFINIT LES LIMITES ICI (ex: Pack Bronze max 5 fois)
-    const LIMITES = { 1: 5, 2: 2, 3: 1 }; 
-    const limiteMax = LIMITES[machine_id] || 1;
+    // On récupère la machine dans le catalogue par son ID
+    const machine = CATALOGUE_MACHINES.find(m => m.id === parseInt(machine_id));
+    
+    if (!machine) return res.status(404).json({ message: "Machine non trouvée." });
 
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
-        // 1. VERIFIER LE QUOTA
+        // A. VERIFIER LE QUOTA (Combien l'utilisateur en possède déjà ?)
         const countRes = await client.query(
             "SELECT COUNT(*) FROM machines_achetees WHERE id_public_user = $1 AND nom_machine = $2 AND statut = 'actif'",
             [id_public_user, machine.nom]
         );
-        if (parseInt(countRes.rows[0].count) >= limiteMax) {
-            throw new Error(`Limite atteinte ! Vous ne pouvez posséder que ${limiteMax} fois cette machine.`);
+        
+        // On compare avec la limite définie dans CATALOGUE_MACHINES
+        if (parseInt(countRes.rows[0].count) >= machine.limite) {
+            throw new Error(`Limite atteinte ! Max ${machine.limite} machines pour le ${machine.nom}.`);
         }
 
-        // 2. VERIFIER LE SOLDE
+        // B. VERIFIER LE SOLDE
         const user = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
-        if (parseFloat(user.rows[0].balance) < machine.prix) throw new Error("Solde insuffisant");
+        if (!user.rows[0] || parseFloat(user.rows[0].balance) < machine.prix) {
+            throw new Error("Solde insuffisant pour cet achat.");
+        }
 
-        // 3. CALCULER LA DATE DE FIN
+        // C. CALCULER LA DATE DE FIN
         const dateFin = new Date();
         dateFin.setDate(dateFin.getDate() + machine.duree);
 
-        // 4. DEBITER ET ENREGISTRER DANS LA TABLE DES MACHINES (IMPORTANT POUR L'AFFICHAGE)
+        // D. EXECUTION : DEBITER + ENREGISTRER LA MACHINE + HISTORIQUE
+        
+        // Débit du solde
         await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [machine.prix, id_public_user]);
         
+        // Insertion dans la table des machines (pour l'affichage "Mes Machines")
         await client.query(
             `INSERT INTO machines_achetees (id_public_user, nom_machine, prix_achat, gain_quotidien, date_fin) 
              VALUES ($1, $2, $3, $4, $5)`,
             [id_public_user, machine.nom, machine.prix, machine.gain, dateFin]
         );
 
-        // 5. HISTORIQUE CLASSIQUE
+        // Insertion dans l'historique général des transactions
         await client.query(
             `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`,
             [id_public_user, `INV-${Date.now()}`, machine.prix, `Achat : ${machine.nom}`]
@@ -701,12 +715,33 @@ app.post('/buy-machine', async (req, res) => {
 
         await client.query('COMMIT');
         res.json({ success: true, message: "Achat validé et machine activée !" });
+
     } catch (e) {
         await client.query('ROLLBACK');
         res.status(400).json({ message: e.message });
-    } finally { client.release(); }
+    } finally {
+        client.release();
+    }
 });
 
+
+
+
+
+
+
+// 3. Route pour récupérer les machines (Indispensable pour l'onglet "Mes Machines")
+app.get('/user/machines/:id_public', async (req, res) => {
+    try {
+        const r = await pool.query(
+            "SELECT * FROM machines_achetees WHERE id_public_user = $1 AND statut = 'actif' ORDER BY id DESC", 
+            [req.params.id_public]
+        );
+        res.json(r.rows);
+    } catch (e) {
+        res.status(500).json([]);
+    }
+});
 
 
 
