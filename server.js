@@ -628,34 +628,32 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 
 // Route mise à jour pour garantir un retour propre (tableau vide au lieu de undefined)
-app.get('/user/affilies/:id_public', async (req, res) => {
-    try {
-        const userRes = await pool.query('SELECT code_promo FROM utilisateurs WHERE id_public = $1', [req.params.id_public]);
-        
-        if (userRes.rows.length === 0) {
-            return res.json([]); // Si l'user n'existe pas, on renvoie une liste vide
-        }
-        
-        const monCodePromo = userRes.rows[0].code_promo;
+// Route pour récupérer les affiliés avec le cumul de leurs dépôts
+app.get('/user/affilies/:id_public', (req, res) => {
+    const { id_public } = req.params;
 
-        const affilies = await pool.query(`
-            SELECT u.id_public, 
-                   COALESCE(SUM(t.montant), 0) as total_depose
-            FROM utilisateurs u
-            LEFT JOIN transactions t ON u.id_public = t.id_public_user AND t.statut = 'validé'
-            WHERE u.parrain_code = $1
-            GROUP BY u.id_public
-        `, [monCodePromo]);
+    // 1. Trouver l'utilisateur (le parrain) pour avoir son code_promo
+    const parrain = users.find(u => u.id_public === id_public);
+    if (!parrain) return res.json([]);
 
-        // On renvoie les résultats, PostgreSQL renvoie un tableau vide .rows si rien n'est trouvé
-        res.json(affilies.rows); 
-    } catch (e) {
-        console.error(e);
-        res.status(500).json([]); // En cas d'erreur, on renvoie un tableau vide pour ne pas faire planter le client
-    }
+    // 2. Filtrer les utilisateurs qui ont ce parrain_code
+    const mesAffilies = users.filter(u => u.parrain_code === parrain.code_promo);
+
+    // 3. Pour chaque affilié, calculer la somme de ses dépôts validés
+    const listeAvecGains = mesAffilies.map(affilie => {
+        const totalDepose = transactions
+            .filter(t => t.id_public_user === affilie.id_public && t.statut === 'validé')
+            .reduce((acc, t) => acc + parseFloat(t.montant), 0);
+
+        return {
+            id_public: affilie.id_public,
+            username: affilie.username,
+            total_depose: totalDepose // C'est cette valeur que le frontend utilisera
+        };
+    });
+
+    res.json(listeAvecGains);
 });
-
-
 
 
 
