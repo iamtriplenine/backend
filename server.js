@@ -309,66 +309,6 @@ app.post('/admin/convertir-minage', async (req, res) => {
 
 
 
-// ---------------------------------------------------------
-// --- SECTION : ACHAT DE MACHINES D'INVESTISSEMENT ---
-// ---------------------------------------------------------
-
-app.post('/buy-machine', async (req, res) => {
-    const { id_public_user, machine_id } = req.body;
-    const client = await pool.connect();
-
-    try {
-        // 1. Trouver la machine dans le catalogue
-        const machineInfos = CATALOGUE_MACHINES.find(m => m.id === machine_id);
-        if (!machineInfos) return res.status(404).json({ message: "Machine introuvable" });
-
-        await client.query('BEGIN');
-
-        // 2. Vérifier le solde de l'utilisateur
-        const userRes = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
-        if (userRes.rows.length === 0) throw new Error("Utilisateur inexistant");
-        
-        const soldeActuel = parseFloat(userRes.rows[0].balance);
-        if (soldeActuel < machineInfos.prix) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: "Solde insuffisant" });
-        }
-
-        // 3. Vérifier la limite d'achat pour cette machine
-        const countRes = await client.query(
-            'SELECT COUNT(*) FROM machines_achetees WHERE id_public_user = $1 AND nom_machine = $2 AND statut = $3',
-            [id_public_user, machineInfos.nom, 'actif']
-        );
-        
-        if (parseInt(countRes.rows[0].count) >= machineInfos.limite) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: `Limite atteinte (${machineInfos.limite} max)` });
-        }
-
-        // 4. Calculer la date de fin (Date d'achat + X jours)
-        const dateFin = new Date();
-        dateFin.setDate(dateFin.getDate() + machineInfos.duree);
-
-        // 5. Débiter le compte et enregistrer la machine
-        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [machineInfos.prix, id_public_user]);
-        
-        await client.query(
-            `INSERT INTO machines_achetees (id_public_user, nom_machine, prix_achat, gain_quotidien, date_fin) 
-             VALUES ($1, $2, $3, $4, $5)`,
-            [id_public_user, machineInfos.nom, machineInfos.prix, machineInfos.gain, dateFin]
-        );
-
-        await client.query('COMMIT');
-        res.json({ success: true, message: `Achat réussi : ${machineInfos.nom} est activée !` });
-
-    } catch (e) {
-        await client.query('ROLLBACK');
-        console.error(e);
-        res.status(500).json({ message: "Erreur lors de l'achat" });
-    } finally {
-        client.release();
-    }
-});
 
 
 
@@ -632,40 +572,52 @@ app.post('/admin/supprimer-user', async (req, res) => {
  * ROUTE : Récupérer les affiliés d'un utilisateur spécifique
  * Cette route est utilisée par la page "Invités" de l'utilisateur
  */
-app.get('/user/affilies/:id_public', (req, res) => {
+// ---------------------------------------------------------
+// --- SECTION : RÉCUPÉRATION DES AFFILIÉS (CORRIGÉE SQL) ---
+// ---------------------------------------------------------
+
+/**
+ * ROUTE : Récupérer les affiliés d'un utilisateur et leurs dépôts cumulés
+ */
+app.get('/user/affilies/:id_public', async (req, res) => {
     const { id_public } = req.params;
 
-    // 1. On cherche d'abord l'utilisateur qui demande la liste (le parrain)
-    const parrain = users.find(u => u.id_public === id_public);
-    
-    if (!parrain) {
-        return res.status(404).json({ message: "Utilisateur non trouvé" });
+    try {
+        // 1. On récupère d'abord le code_promo de l'utilisateur (le parrain)
+        const parrainRes = await pool.query(
+            'SELECT code_promo FROM utilisateurs WHERE id_public = $1', 
+            [id_public]
+        );
+
+        if (parrainRes.rows.length === 0) {
+            return res.status(404).json({ message: "Utilisateur non trouvé" });
+        }
+
+        const monCodePromo = parrainRes.rows[0].code_promo;
+
+        // 2. On cherche les affiliés ET on calcule la somme de leurs dépôts validés en une seule requête SQL
+        // Cette requête est beaucoup plus rapide et fiable
+        const query = `
+            SELECT 
+                u.id_public, 
+                u.username, 
+                COALESCE(SUM(t.montant), 0) as total_depose
+            FROM utilisateurs u
+            LEFT JOIN transactions t ON u.id_public = t.id_public_user AND t.statut = 'validé'
+            WHERE UPPER(u.parrain_code) = UPPER($1)
+            GROUP BY u.id_public, u.username
+        `;
+
+        const affiliesRes = await pool.query(query, [monCodePromo]);
+
+        // 3. On renvoie le tableau (sera vide [] si aucun affilié, ce qui est correct)
+        res.json(affiliesRes.rows);
+
+    } catch (e) {
+        console.error("Erreur récupération affiliés:", e);
+        res.status(500).json({ message: "Erreur serveur" });
     }
-
-    // 2. On récupère TOUS les utilisateurs dont le parrain_code correspond au code_promo du parrain
-    // On transforme les codes en Majuscules pour éviter les erreurs de saisie (a1b2 vs A1B2)
-    const codeCherche = parrain.code_promo.toString().toUpperCase();
-
-    const mesAffilies = users.filter(u => 
-        u.parrain_code && u.parrain_code.toString().toUpperCase() === codeCherche
-    );
-
-    // 3. Pour chaque affilié trouvé, on calcule le total de ses dépôts VALIDÉS
-    const resultatFinal = mesAffilies.map(ami => {
-        const totalDepose = transactions
-            .filter(t => t.id_public_user === ami.id_public && t.statut === 'validé')
-            .reduce((acc, t) => acc + parseFloat(t.montant || 0), 0);
-
-        return {
-            id_public: ami.id_public,
-            username: ami.username,
-            total_depose: totalDepose // Indispensable pour l'affichage des gains
-        };
-    });
-
-    res.json(resultatFinal);
 });
-
 
 
 
