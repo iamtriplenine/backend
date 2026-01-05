@@ -1,4 +1,5 @@
-const express = require('express');
+
+    const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const app = express();
@@ -47,8 +48,7 @@ const initDB = async () => {
             // Ajoute la colonne pour stocker le minage (Mega Coins)
 await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
 
-// À mettre juste avant initDB() ou à l'intérieur pour la date et l'heure
-await pool.query("UPDATE transactions SET date_crea = CURRENT_TIMESTAMP WHERE date_crea IS NULL");
+
 
 
       
@@ -570,54 +570,54 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 // Route mise à jour pour garantir un retour propre (tableau vide au lieu de undefined)
 /**
- * ROUTE : Récupérer les affiliés d'un utilisateur spécifique
- * Cette route est utilisée par la page "Invités" de l'utilisateur
- */
+ * ROUTE : Récupérer les affiliés d'un utilisateur spécifique
+ * Cette route est utilisée par la page "Invités" de l'utilisateur
+ */
 // ---------------------------------------------------------
 // --- SECTION : RÉCUPÉRATION DES AFFILIÉS (CORRIGÉE SQL) ---
 // ---------------------------------------------------------
 
 /**
- * ROUTE : Récupérer les affiliés d'un utilisateur et leurs dépôts cumulés
- */
+ * ROUTE : Récupérer les affiliés d'un utilisateur et leurs dépôts cumulés
+ */
 app.get('/user/affilies/:id_public', async (req, res) => {
-    const { id_public } = req.params;
+    const { id_public } = req.params;
 
-    try {
-        // 1. On récupère d'abord le code_promo de l'utilisateur (le parrain)
-        const parrainRes = await pool.query(
-            'SELECT code_promo FROM utilisateurs WHERE id_public = $1', 
-            [id_public]
-        );
+    try {
+        // 1. On récupère d'abord le code_promo de l'utilisateur (le parrain)
+        const parrainRes = await pool.query(
+            'SELECT code_promo FROM utilisateurs WHERE id_public = $1', 
+            [id_public]
+        );
 
-        if (parrainRes.rows.length === 0) {
-            return res.status(404).json({ message: "Utilisateur non trouvé" });
-        }
+        if (parrainRes.rows.length === 0) {
+            return res.status(404).json({ message: "Utilisateur non trouvé" });
+        }
 
-        const monCodePromo = parrainRes.rows[0].code_promo;
+        const monCodePromo = parrainRes.rows[0].code_promo;
 
-        // 2. On cherche les affiliés ET on calcule la somme de leurs dépôts validés en une seule requête SQL
-        // Cette requête est beaucoup plus rapide et fiable
-        const query = `
-            SELECT 
-                u.id_public, 
-                u.username, 
-                COALESCE(SUM(t.montant), 0) as total_depose
-            FROM utilisateurs u
-            LEFT JOIN transactions t ON u.id_public = t.id_public_user AND t.statut = 'validé'
-            WHERE UPPER(u.parrain_code) = UPPER($1)
-            GROUP BY u.id_public, u.username
-        `;
+        // 2. On cherche les affiliés ET on calcule la somme de leurs dépôts validés en une seule requête SQL
+        // Cette requête est beaucoup plus rapide et fiable
+        const query = `
+            SELECT 
+                u.id_public, 
+                u.username, 
+                COALESCE(SUM(t.montant), 0) as total_depose
+            FROM utilisateurs u
+            LEFT JOIN transactions t ON u.id_public = t.id_public_user AND t.statut = 'validé'
+            WHERE UPPER(u.parrain_code) = UPPER($1)
+            GROUP BY u.id_public, u.username
+        `;
 
-        const affiliesRes = await pool.query(query, [monCodePromo]);
+        const affiliesRes = await pool.query(query, [monCodePromo]);
 
-        // 3. On renvoie le tableau (sera vide [] si aucun affilié, ce qui est correct)
-        res.json(affiliesRes.rows);
+        // 3. On renvoie le tableau (sera vide [] si aucun affilié, ce qui est correct)
+        res.json(affiliesRes.rows);
 
-    } catch (e) {
-        console.error("Erreur récupération affiliés:", e);
-        res.status(500).json({ message: "Erreur serveur" });
-    }
+    } catch (e) {
+        console.error("Erreur récupération affiliés:", e);
+        res.status(500).json({ message: "Erreur serveur" });
+    }
 });
 
 
