@@ -386,6 +386,30 @@ app.post('/invest/acheter-test', async (req, res) => {
 
 
 
+
+
+
+// Route pour voir les investissements d'un utilisateur
+app.get('/user/investissements/:id_public', async (req, res) => {
+    try {
+        const r = await pool.query(
+            "SELECT * FROM investissements WHERE id_public_user = $1 ORDER BY id DESC", 
+            [req.params.id_public]
+        );
+        res.json(r.rows);
+    } catch (e) {
+        res.status(500).json([]);
+    }
+});
+
+
+
+
+
+
+
+
+
 // ---------------------------------------------------------
 // --- SECTION : TRANSFERT ENTRE PORTEFEUILLES (WALLET) ---
 // ---------------------------------------------------------
