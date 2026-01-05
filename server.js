@@ -42,21 +42,11 @@ const initDB = async () => {
                 valeur TEXT,
                 montant DECIMAL(15,2)
             );
-
-            CREATE TABLE IF NOT EXISTS transactions (
-                id SERIAL PRIMARY KEY,
-                id_public_user VARCHAR(6),
-                transaction_id TEXT UNIQUE,
-                montant DECIMAL(15,2),
-                statut TEXT DEFAULT 'en attente',
-                date_crea TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
            
         `);
 
 
-        // Force la mise à jour des dates pour les anciennes transactions si nécessaire
-await pool.query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS date_crea TIMESTAMP DEFAULT CURRENT_TIMESTAMP;`);
+     
 // 
             // Ajoute la colonne pour stocker le minage (Mega Coins)
 await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
@@ -81,20 +71,6 @@ await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage
 
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
 
-// Création de la table des investissements (Machines)
-await pool.query(`
-    CREATE TABLE IF NOT EXISTS machines_achetees (
-        id SERIAL PRIMARY KEY,
-        id_public_user VARCHAR(6),
-        type_machine TEXT,
-        prix_achat DECIMAL(15,2),
-        gain_journalier DECIMAL(15,2),
-        duree_vie_totale INTEGER,
-        jours_restants INTEGER,
-        date_achat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        dernier_recolte TIMESTAMP DEFAULT CURRENT_TIMESTAMP - INTERVAL '1 day'
-    );
-`);
         
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
 
@@ -676,113 +652,6 @@ app.get('/config/taux-parrainage', async (req, res) => {
 // --- ROUTES ADMIN : GESTION DU CATALOGUE ---
 
 
-// ---------------------------------------------------------
-// --- SECTION : SYSTÈME D'INVESTISSEMENT (MACHINES) ---
-// ---------------------------------------------------------
-
-// Configuration du catalogue (doit correspondre au frontend)
-const CATALOGUE_MACHINES = {
-    "BRONZE": { prix: 500, gain: 50, jours: 20, limite: 5 },
-    "SILVER": { prix: 2000, gain: 240, jours: 15, limite: 3 },
-    "GOLD": { prix: 5000, gain: 650, jours: 12, limite: 2 }
-};
-
-// Route pour ACHETER une machine
-app.post('/invest/acheter', async (req, res) => {
-    const { id_public_user, type } = req.body;
-    const config = CATALOGUE_MACHINES[type];
-
-    if (!config) return res.status(400).json({ message: "Modèle inconnu." });
-
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-
-        // Vérifier le solde
-        const userRes = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
-        if (parseFloat(userRes.rows[0].balance) < config.prix) {
-            throw new Error("Solde insuffisant.");
-        }
-
-        // Vérifier la limite d'achat (machines encore actives)
-        const limitCheck = await client.query(
-            'SELECT COUNT(*) FROM machines_achetees WHERE id_public_user = $1 AND type_machine = $2 AND jours_restants > 0',
-            [id_public_user, type]
-        );
-        if (parseInt(limitCheck.rows[0].count) >= config.limite) {
-            throw new Error(`Limite atteinte : Max ${config.limite} pour ce type.`);
-        }
-
-        // Déduire le solde
-        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [config.prix, id_public_user]);
-
-        // Créer la machine
-        await client.query(
-            `INSERT INTO machines_achetees (id_public_user, type_machine, prix_achat, gain_journalier, duree_vie_totale, jours_restants, dernier_recolte) 
-             VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP - INTERVAL '1 day')`,
-            [id_public_user, type, config.prix, config.gain, config.jours, config.jours]
-        );
-
-        // Historique de transaction
-        await client.query(
-            `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`,
-            [id_public_user, `INV-${Date.now()}`, config.prix, `Achat Machine ${type}`]
-        );
-
-        await client.query('COMMIT');
-        res.json({ success: true, message: "Machine activée !" });
-    } catch (e) {
-        await client.query('ROLLBACK');
-        res.status(400).json({ message: e.message });
-    } finally { client.release(); }
-});
-
-// Route pour RÉCOLTER le gain quotidien
-app.post('/invest/recolter', async (req, res) => {
-    const { id_public_user, machine_db_id } = req.body;
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-
-        const machRes = await client.query('SELECT * FROM machines_achetees WHERE id = $1 AND id_public_user = $2', [machine_db_id, id_public_user]);
-        if (machRes.rows.length === 0) throw new Error("Machine introuvable.");
-
-        const m = machRes.rows[0];
-        if (m.jours_restants <= 0) throw new Error("Machine expirée.");
-
-        // Vérifier si déjà récolté aujourd'hui
-        const aujourdhui = new Date().toISOString().split('T')[0];
-        const derniere = new Date(m.dernier_recolte).toISOString().split('T')[0];
-        if (aujourdhui === derniere) throw new Error("Déjà récolté. Revenez demain.");
-
-        // Créditer et mettre à jour
-        await client.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [m.gain_journalier, id_public_user]);
-        await client.query(
-            'UPDATE machines_achetees SET jours_restants = jours_restants - 1, dernier_recolte = CURRENT_TIMESTAMP WHERE id = $1',
-            [machine_db_id]
-        );
-
-        // Historique
-        await client.query(
-            `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`,
-            [id_public_user, `GAIN-${Date.now()}`, m.gain_journalier, `Gain Machine ${m.type_machine}`]
-        );
-
-        await client.query('COMMIT');
-        res.json({ success: true, message: `+${m.gain_journalier} F ajoutés !` });
-    } catch (e) {
-        await client.query('ROLLBACK');
-        res.status(400).json({ message: e.message });
-    } finally { client.release(); }
-});
-
-// Route pour afficher les machines sur l'interface utilisateur
-app.get('/invest/mes-machines/:id_public', async (req, res) => {
-    try {
-        const r = await pool.query('SELECT * FROM machines_achetees WHERE id_public_user = $1 ORDER BY id DESC', [req.params.id_public]);
-        res.json(r.rows);
-    } catch (e) { res.status(500).json([]); }
-});
 
 
 // --- DÉMARRAGE DU SERVEUR ---
