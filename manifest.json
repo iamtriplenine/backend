@@ -1,0 +1,21 @@
+{
+  "name": "Mega Wallet",
+  "short_name": "MegaWallet",
+  "description": "Gagnez et gérez vos finances avec Mega Wallet",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "https://i.postimg.cc/NGpJ6343/IMG_8321.jpg",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://i.postimg.cc/NGpJ6343/IMG_8321.jpg",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
