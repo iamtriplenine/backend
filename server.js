@@ -47,7 +47,8 @@ const initDB = async () => {
             // Ajoute la colonne pour stocker le minage (Mega Coins)
 await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
 
-
+// À mettre juste avant initDB() ou à l'intérieur pour la date et l'heure
+await pool.query("UPDATE transactions SET date_crea = CURRENT_TIMESTAMP WHERE date_crea IS NULL");
 
 
       
