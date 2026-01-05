@@ -67,24 +67,6 @@ await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage
 
 
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
-// --- 1. MISE À JOUR DE LA TABLE DANS initDB() ---
-// On ajoute 'jours_restants' pour gérer la fin de vie de la machine
-await pool.query(`
-    CREATE TABLE IF NOT EXISTS machines_achetees (
-        id SERIAL PRIMARY KEY,
-        id_public_user VARCHAR(6),
-        type_machine TEXT,
-        prix_achat DECIMAL(15,2),
-        gain_journalier DECIMAL(15,2),
-        duree_vie_totale INTEGER,
-        jours_restants INTEGER,
-        date_achat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        dernier_recolte TIMESTAMP DEFAULT CURRENT_TIMESTAMP - INTERVAL '1 day'
-    );
-`);
-
-// --- 2. CATALOGUE DÉTAILLÉ ---
-// Exemple : 500F, rapporte 50F/jour pendant 20 jours (Total 1000F soit 200%)
 
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
 
@@ -563,135 +545,7 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 
 // (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
-// ---------------------------------------------------------
-// --- SECTION : SYSTÈME D'INVESTISSEMENT (MACHINES) ---
-// ---------------------------------------------------------
 
-/**
- * CONFIGURATION DU CATALOGUE
- * Note: Ces valeurs doivent être identiques à celles du Frontend
- */
-const CATALOGUE_MACHINES = {
-    "BRONZE": { prix: 50, gain: 5, jours: 20, limite: 2 },
-    "SILVER": { prix: 2000, gain: 240, jours: 15, limite: 3 },
-    "GOLD": { prix: 5000, gain: 650, jours: 12, limite: 2 }
-};
-
-/**
- * ROUTE : ACHETER UNE MACHINE
- * Retire l'argent du solde et crée le contrat de minage
- */
-app.post('/invest/acheter', async (req, res) => {
-    const { id_public_user, type } = req.body;
-    const config = CATALOGUE_MACHINES[type];
-
-    if (!config) return res.status(400).json({ message: "Modèle de machine inconnu." });
-
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-
-        // 1. Vérifier le solde de l'utilisateur
-        const userRes = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
-        if (parseFloat(userRes.rows[0].balance) < config.prix) {
-            throw new Error("Solde insuffisant pour cet achat.");
-        }
-
-        // 2. Vérifier la limite d'achat (Uniquement les machines encore actives)
-        const limitCheck = await client.query(
-            'SELECT COUNT(*) FROM machines_achetees WHERE id_public_user = $1 AND type_machine = $2 AND jours_restants > 0',
-            [id_public_user, type]
-        );
-        if (parseInt(limitCheck.rows[0].count) >= config.limite) {
-            throw new Error(`Limite atteinte : Max ${config.limite} machines de ce type.`);
-        }
-
-        // 3. Déduire le montant du solde
-        await client.query('UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2', [config.prix, id_public_user]);
-
-        // 4. Créer la machine (dernier_recolte mis à "hier" pour permettre de récolter de suite ou demain)
-        await client.query(
-            `INSERT INTO machines_achetees (id_public_user, type_machine, prix_achat, gain_journalier, duree_vie_totale, jours_restants, dernier_recolte) 
-             VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP - INTERVAL '1 day')`,
-            [id_public_user, type, config.prix, config.gain, config.jours, config.jours]
-        );
-
-        // 5. Enregistrer l'achat dans l'historique des transactions
-        await client.query(
-            `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`,
-            [id_public_user, `INV-${Date.now()}`, config.prix, `Achat Machine ${type}`]
-        );
-
-        await client.query('COMMIT');
-        res.json({ success: true, message: `Machine ${type} activée avec succès !` });
-
-    } catch (e) {
-        await client.query('ROLLBACK');
-        res.status(400).json({ message: e.message });
-    } finally { client.release(); }
-});
-
-/**
- * ROUTE : RÉCOLTER LE GAIN
- * Ajoute le gain au solde et décrémente la durée de vie
- */
-app.post('/invest/recolter', async (req, res) => {
-    const { id_public_user, machine_db_id } = req.body;
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-
-        // 1. Récupérer les infos de la machine
-        const machRes = await client.query('SELECT * FROM machines_achetees WHERE id = $1 AND id_public_user = $2', [machine_db_id, id_public_user]);
-        if (machRes.rows.length === 0) throw new Error("Machine introuvable.");
-
-        const m = machRes.rows[0];
-
-        // 2. Vérifier si elle est expirée
-        if (m.jours_restants <= 0) throw new Error("Machine expirée.");
-
-        // 3. Vérifier la règle de minuit (Date calendaire différente)
-        const aujourdhui = new Date().toISOString().split('T')[0];
-        const derniere = new Date(m.dernier_recolte).toISOString().split('T')[0];
-
-        if (aujourdhui === derniere) {
-            throw new Error("Déjà récolté aujourd'hui. Revenez après minuit.");
-        }
-
-        // 4. Créditer le solde et mettre à jour la machine
-        await client.query('UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2', [m.gain_journalier, id_public_user]);
-        await client.query(
-            'UPDATE machines_achetees SET jours_restants = jours_restants - 1, dernier_recolte = CURRENT_TIMESTAMP WHERE id = $1',
-            [machine_db_id]
-        );
-
-        // 5. Historique
-        await client.query(
-            `INSERT INTO transactions (id_public_user, transaction_id, montant, statut) VALUES ($1, $2, $3, $4)`,
-            [id_public_user, `GAIN-${Date.now()}`, m.gain_journalier, `Revenu Machine ${m.type_machine}`]
-        );
-
-        await client.query('COMMIT');
-        res.json({ success: true, message: `Félicitations ! +${m.gain_journalier} F ajoutés.` });
-
-    } catch (e) {
-        await client.query('ROLLBACK');
-        res.status(400).json({ message: e.message });
-    } finally { client.release(); }
-});
-
-/**
- * ROUTE : LISTER LES MACHINES DE L'UTILISATEUR
- */
-app.get('/invest/mes-machines/:id_public', async (req, res) => {
-    try {
-        const r = await pool.query(
-            'SELECT * FROM machines_achetees WHERE id_public_user = $1 ORDER BY id DESC', 
-            [req.params.id_public]
-        );
-        res.json(r.rows);
-    } catch (e) { res.status(500).json([]); }
-});
 // (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
 
 
@@ -716,54 +570,54 @@ app.get('/invest/mes-machines/:id_public', async (req, res) => {
 
 // Route mise à jour pour garantir un retour propre (tableau vide au lieu de undefined)
 /**
- * ROUTE : Récupérer les affiliés d'un utilisateur spécifique
- * Cette route est utilisée par la page "Invités" de l'utilisateur
- */
+ * ROUTE : Récupérer les affiliés d'un utilisateur spécifique
+ * Cette route est utilisée par la page "Invités" de l'utilisateur
+ */
 // ---------------------------------------------------------
 // --- SECTION : RÉCUPÉRATION DES AFFILIÉS (CORRIGÉE SQL) ---
 // ---------------------------------------------------------
 
 /**
- * ROUTE : Récupérer les affiliés d'un utilisateur et leurs dépôts cumulés
- */
+ * ROUTE : Récupérer les affiliés d'un utilisateur et leurs dépôts cumulés
+ */
 app.get('/user/affilies/:id_public', async (req, res) => {
-    const { id_public } = req.params;
+    const { id_public } = req.params;
 
-    try {
-        // 1. On récupère d'abord le code_promo de l'utilisateur (le parrain)
-        const parrainRes = await pool.query(
-            'SELECT code_promo FROM utilisateurs WHERE id_public = $1', 
-            [id_public]
-        );
+    try {
+        // 1. On récupère d'abord le code_promo de l'utilisateur (le parrain)
+        const parrainRes = await pool.query(
+            'SELECT code_promo FROM utilisateurs WHERE id_public = $1', 
+            [id_public]
+        );
 
-        if (parrainRes.rows.length === 0) {
-            return res.status(404).json({ message: "Utilisateur non trouvé" });
-        }
+        if (parrainRes.rows.length === 0) {
+            return res.status(404).json({ message: "Utilisateur non trouvé" });
+        }
 
-        const monCodePromo = parrainRes.rows[0].code_promo;
+        const monCodePromo = parrainRes.rows[0].code_promo;
 
-        // 2. On cherche les affiliés ET on calcule la somme de leurs dépôts validés en une seule requête SQL
-        // Cette requête est beaucoup plus rapide et fiable
-        const query = `
-            SELECT 
-                u.id_public, 
-                u.username, 
-                COALESCE(SUM(t.montant), 0) as total_depose
-            FROM utilisateurs u
-            LEFT JOIN transactions t ON u.id_public = t.id_public_user AND t.statut = 'validé'
-            WHERE UPPER(u.parrain_code) = UPPER($1)
-            GROUP BY u.id_public, u.username
-        `;
+        // 2. On cherche les affiliés ET on calcule la somme de leurs dépôts validés en une seule requête SQL
+        // Cette requête est beaucoup plus rapide et fiable
+        const query = `
+            SELECT 
+                u.id_public, 
+                u.username, 
+                COALESCE(SUM(t.montant), 0) as total_depose
+            FROM utilisateurs u
+            LEFT JOIN transactions t ON u.id_public = t.id_public_user AND t.statut = 'validé'
+            WHERE UPPER(u.parrain_code) = UPPER($1)
+            GROUP BY u.id_public, u.username
+        `;
 
-        const affiliesRes = await pool.query(query, [monCodePromo]);
+        const affiliesRes = await pool.query(query, [monCodePromo]);
 
-        // 3. On renvoie le tableau (sera vide [] si aucun affilié, ce qui est correct)
-        res.json(affiliesRes.rows);
+        // 3. On renvoie le tableau (sera vide [] si aucun affilié, ce qui est correct)
+        res.json(affiliesRes.rows);
 
-    } catch (e) {
-        console.error("Erreur récupération affiliés:", e);
-        res.status(500).json({ message: "Erreur serveur" });
-    }
+    } catch (e) {
+        console.error("Erreur récupération affiliés:", e);
+        res.status(500).json({ message: "Erreur serveur" });
+    }
 });
 
 
