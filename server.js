@@ -44,9 +44,6 @@ const initDB = async () => {
             );
            
         `);
-
-
-     
 // 
             // Ajoute la colonne pour stocker le minage (Mega Coins)
 await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
@@ -71,7 +68,6 @@ await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage
 
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
 
-        
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
 
 
@@ -98,22 +94,6 @@ for (let row of anciens.rows) {
 
 
 
-
-// --- INITIALISATION DE LA TABLE INVESTISSEMENTS ---
-await pool.query(`
-    CREATE TABLE IF NOT EXISTS investissements (
-        id SERIAL PRIMARY KEY,
-        id_public_user VARCHAR(6),
-        type_machine TEXT DEFAULT 'TEST_50',
-        date_achat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        jours_restants INTEGER DEFAULT 30
-    );
-`);
-
-
-
-
-        
            
            
       
@@ -337,69 +317,6 @@ app.post('/admin/convertir-minage', async (req, res) => {
 
 
 
-
-
-
-
-
-// ---------------------------------------------------------
-// --- SECTION : SYSTÈME D'INVESTISSEMENT (MINING) ---
-// ---------------------------------------------------------
-
-// Route pour acheter la machine de test (50F)
-app.post('/invest/acheter-test', async (req, res) => {
-    const { id_public_user } = req.body;
-    const client = await pool.connect();
-    
-    try {
-        await client.query('BEGIN');
-
-        // 1. Vérifier si l'utilisateur a assez d'argent (50F)
-        const user = await client.query('SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE', [id_public_user]);
-        if (parseFloat(user.rows[0].balance) < 50) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ success: false, message: "Solde insuffisant (50F)" });
-        }
-
-        // 2. Vérifier la limite (Maximum 2 machines de ce type)
-        const countRes = await client.query('SELECT COUNT(*) FROM investissements WHERE id_public_user = $1 AND type_machine = $2', [id_public_user, 'TEST_50']);
-        if (parseInt(countRes.rows[0].count) >= 2) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ success: false, message: "Limite d'achat atteinte (Max 2)" });
-        }
-
-        // 3. Déduire les 50F et créer la machine
-        await client.query('UPDATE utilisateurs SET balance = balance - 50 WHERE id_public = $1', [id_public_user]);
-        await client.query('INSERT INTO investissements (id_public_user, type_machine, jours_restants) VALUES ($1, $2, 30)', [id_public_user, 'TEST_50']);
-
-        await client.query('COMMIT');
-        res.json({ success: true, message: "Machine activée ! Gains : 5F/jour." });
-
-    } catch (e) {
-        await client.query('ROLLBACK');
-        res.status(500).json({ success: false, message: "Erreur serveur" });
-    } finally {
-        client.release();
-    }
-});
-
-
-
-
-
-
-// Route pour voir les investissements d'un utilisateur
-app.get('/user/investissements/:id_public', async (req, res) => {
-    try {
-        const r = await pool.query(
-            "SELECT * FROM investissements WHERE id_public_user = $1 ORDER BY id DESC", 
-            [req.params.id_public]
-        );
-        res.json(r.rows);
-    } catch (e) {
-        res.status(500).json([]);
-    }
-});
 
 
 
@@ -733,48 +650,8 @@ app.get('/config/taux-parrainage', async (req, res) => {
 
 
 
+
 // --- DÉMARRAGE DU SERVEUR ---
 const PORT = process.env.PORT || 10000;
-
-
-
-
-
-// ---------------------------------------------------------
-// --- SECTION : DISTRIBUTION AUTOMATIQUE (CHRONOS) ---
-// ---------------------------------------------------------
-
-// Ce robot se réveille chaque jour à 00h00
-cron.schedule('0 0 * * *', async () => {
-    console.log("🤖 [INVEST] Début de la distribution des gains...");
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        
-        // 1. On cherche toutes les machines qui ont encore des jours de vie
-        const actives = await client.query('SELECT * FROM investissements WHERE jours_restants > 0');
-        
-        for (let machine of actives.rows) {
-            // 2. On verse les 5F à l'utilisateur
-            await client.query('UPDATE utilisateurs SET balance = balance + 5 WHERE id_public = $1', [machine.id_public_user]);
-            
-            // 3. On réduit la durée de vie de la machine de 1 jour
-            await client.query('UPDATE investissements SET jours_restants = jours_restants - 1 WHERE id = $1', [machine.id]);
-        }
-        
-        await client.query('COMMIT');
-        console.log(`✅ distribution terminée pour ${actives.rows.length} machines.`);
-    } catch (e) {
-        await client.query('ROLLBACK');
-        console.error("❌ Erreur distribution investissement:", e);
-    } finally {
-        client.release();
-    }
-});
-
-
-
-
-
 
 app.listen(PORT, () => console.log("🚀 Serveur Connecté sur port " + PORT));
