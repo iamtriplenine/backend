@@ -42,8 +42,21 @@ const initDB = async () => {
                 valeur TEXT,
                 montant DECIMAL(15,2)
             );
+
+            CREATE TABLE IF NOT EXISTS transactions (
+                id SERIAL PRIMARY KEY,
+                id_public_user VARCHAR(6),
+                transaction_id TEXT UNIQUE,
+                montant DECIMAL(15,2),
+                statut TEXT DEFAULT 'en attente',
+                date_crea TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
            
         `);
+
+
+        // Force la mise à jour des dates pour les anciennes transactions si nécessaire
+await pool.query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS date_crea TIMESTAMP DEFAULT CURRENT_TIMESTAMP;`);
 // 
             // Ajoute la colonne pour stocker le minage (Mega Coins)
 await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
