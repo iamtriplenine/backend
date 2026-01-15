@@ -52,6 +52,15 @@ const initDB = async () => {
     await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
     await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS dernier_code_utilise TEXT DEFAULT '';`);
 
+
+
+      await pool.query(`ALTER TABLE invest_machines ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';`);
+await pool.query(`ALTER TABLE invest_machines ADD COLUMN IF NOT EXISTS limite_achat INT DEFAULT 0;`); // 0 = illimité
+await pool.query(`ALTER TABLE invest_machines ADD COLUMN IF NOT EXISTS ordre INT DEFAULT 0;`);
+await pool.query(`ALTER TABLE invest_machines ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;`);
+
+
+      
     await pool.query(`
       INSERT INTO config_globale (cle, valeur, montant)
       VALUES ('code_journalier', 'MEGA2025', 50)
@@ -577,6 +586,86 @@ app.post('/admin/supprimer-user', async (req, res) => {
 
 
 // (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
+app.get('/admin/invest/machines/:cle', async (req, res) => {
+  if (req.params.cle !== "999") return res.status(403).send("Refusé");
+  try {
+    const r = await pool.query(`SELECT * FROM invest_machines ORDER BY ordre ASC, prix ASC, id ASC`);
+    res.json({ success: true, machines: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, message: "Erreur serveur" });
+  }
+});
+
+
+app.post('/admin/invest/machines/add', async (req, res) => {
+  const { cle, nom, prix, gain_jour, duree_jours, total_retour, actif, limite_achat, description, ordre } = req.body;
+  if (cle !== "999") return res.status(403).send("Refusé");
+
+  try {
+    await pool.query(
+      `INSERT INTO invest_machines (nom, prix, gain_jour, duree_jours, total_retour, actif, limite_achat, description, ordre)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [
+        nom,
+        prix,
+        gain_jour,
+        duree_jours,
+        total_retour,
+        actif !== false,
+        limite_achat || 0,
+        description || "",
+        ordre || 0
+      ]
+    );
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, message: "Erreur ajout" });
+  }
+});
+
+
+app.post('/admin/invest/machines/update', async (req, res) => {
+  const { cle, id, nom, prix, gain_jour, duree_jours, total_retour, actif, limite_achat, description, ordre } = req.body;
+  if (cle !== "999") return res.status(403).send("Refusé");
+
+  try {
+    await pool.query(
+      `UPDATE invest_machines
+       SET nom=$1, prix=$2, gain_jour=$3, duree_jours=$4, total_retour=$5,
+           actif=$6, limite_achat=$7, description=$8, ordre=$9
+       WHERE id=$10`,
+      [
+        nom,
+        prix,
+        gain_jour,
+        duree_jours,
+        total_retour,
+        actif !== false,
+        limite_achat || 0,
+        description || "",
+        ordre || 0,
+        id
+      ]
+    );
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, message: "Erreur update" });
+  }
+});
+
+
+
+app.post('/admin/invest/machines/toggle', async (req, res) => {
+  const { cle, id, actif } = req.body;
+  if (cle !== "999") return res.status(403).send("Refusé");
+
+  try {
+    await pool.query(`UPDATE invest_machines SET actif = $1 WHERE id = $2`, [!!actif, id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, message: "Erreur toggle" });
+  }
+});
 
 // (((((((((((((((((((((((((((((((((((((((------------------------((((((((((((((((((((((((((((((((((((((((
 
@@ -751,6 +840,34 @@ app.post('/invest/acheter', async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({ success: false, message: "Solde insuffisant" });
     }
+
+
+
+
+
+
+      const limite = parseInt(mRes.rows[0].limite_achat || 0); // 0 illimité
+
+if (limite > 0) {
+  const countRes = await client.query(
+    `SELECT COUNT(*)::int as c
+     FROM user_investments
+     WHERE id_public_user = $1 AND machine_id = $2`,
+    [id_public_user, machine_id]
+  );
+
+  const deja = countRes.rows[0].c || 0;
+  if (deja >= limite) {
+    await client.query('ROLLBACK');
+    return res.status(400).json({
+      success: false,
+      message: `Limite atteinte : tu peux acheter cette machine ${limite} fois maximum.`
+    });
+  }
+}
+
+
+      
 
     // Retire solde
     await client.query(
