@@ -67,10 +67,54 @@ await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage
 
 
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
+// --- SECTION : INVEST (MACHINES) ---
+// Catalogue des machines
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS invest_machines (
+    id SERIAL PRIMARY KEY,
+    nom TEXT NOT NULL,
+    prix DECIMAL(15,2) NOT NULL,
+    gain_jour DECIMAL(15,2) NOT NULL,
+    duree_jours INT NOT NULL,
+    total_retour DECIMAL(15,2) NOT NULL,
+    actif BOOLEAN DEFAULT true
+  );
+`);
+
+// Achats / cycles utilisateur
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS user_investments (
+    id SERIAL PRIMARY KEY,
+    id_public_user VARCHAR(6) NOT NULL,
+    machine_id INT NOT NULL REFERENCES invest_machines(id),
+    prix DECIMAL(15,2) NOT NULL,
+    gain_jour DECIMAL(15,2) NOT NULL,
+    duree_jours INT NOT NULL,
+    total_retour DECIMAL(15,2) NOT NULL,
+
+    cycles_payes INT DEFAULT 0,
+    start_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_claim_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    statut TEXT DEFAULT 'en cours' -- en cours | terminé
+  );
+`);
 
 // --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
 
 
+
+// ✅ Seed d'une seule machine de test (si table vide)
+const machineCount = await pool.query(`SELECT COUNT(*)::int as c FROM invest_machines`);
+if ((machineCount.rows[0]?.c || 0) === 0) {
+  await pool.query(`
+    INSERT INTO invest_machines (nom, prix, gain_jour, duree_jours, total_retour, actif)
+    VALUES ('Machine Test 1 000', 1000, 100, 15, 1500, true)
+  `);
+  console.log("✅ Invest: Machine de test ajoutée (1 000 → 100/j × 15j)");
+} else {
+  console.log("ℹ️ Invest: Machines déjà présentes, seed ignoré");
+}
 
 
 
@@ -646,6 +690,217 @@ app.get('/config/taux-parrainage', async (req, res) => {
 
 
 // --- ROUTES ADMIN : GESTION DU CATALOGUE ---
+const MS_24H = 24 * 60 * 60 * 1000;
+
+function calcClaimableCycles(lastClaimAt, now) {
+  const diff = now.getTime() - new Date(lastClaimAt).getTime();
+  if (diff < MS_24H) return 0;
+  return Math.floor(diff / MS_24H);
+}
+
+
+app.get('/invest/machines', async (req, res) => {
+  try {
+    const r = await pool.query(`SELECT * FROM invest_machines WHERE actif = true ORDER BY prix ASC`);
+    res.json({ success: true, machines: r.rows });
+  } catch (e) {
+    console.error("INVEST machines error:", e);
+    res.status(500).json({ success: false, message: "Erreur serveur" });
+  }
+});
+
+
+
+
+
+
+app.post('/invest/acheter', async (req, res) => {
+  const { id_public_user, machine_id } = req.body;
+  const client = await pool.connect();
+
+  try {
+    if (!id_public_user || !machine_id) {
+      return res.status(400).json({ success: false, message: "Paramètres manquants" });
+    }
+
+    await client.query('BEGIN');
+
+    // Verrouille utilisateur
+    const uRes = await client.query(
+      'SELECT balance FROM utilisateurs WHERE id_public = $1 FOR UPDATE',
+      [id_public_user]
+    );
+    if (uRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: "Utilisateur introuvable" });
+    }
+
+    // Machine
+    const mRes = await client.query(
+      'SELECT * FROM invest_machines WHERE id = $1 AND actif = true',
+      [machine_id]
+    );
+    if (mRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: "Machine introuvable" });
+    }
+
+    const solde = parseFloat(uRes.rows[0].balance);
+    const prix = parseFloat(mRes.rows[0].prix);
+
+    if (solde < prix) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, message: "Solde insuffisant" });
+    }
+
+    // Retire solde
+    await client.query(
+      'UPDATE utilisateurs SET balance = balance - $1 WHERE id_public = $2',
+      [prix, id_public_user]
+    );
+
+    // Crée investissement
+    await client.query(
+      `
+      INSERT INTO user_investments
+        (id_public_user, machine_id, prix, gain_jour, duree_jours, total_retour, cycles_payes, last_claim_at)
+      VALUES
+        ($1,$2,$3,$4,$5,$6,0, CURRENT_TIMESTAMP)
+      `,
+      [
+        id_public_user,
+        machine_id,
+        mRes.rows[0].prix,
+        mRes.rows[0].gain_jour,
+        mRes.rows[0].duree_jours,
+        mRes.rows[0].total_retour
+      ]
+    );
+
+    // Historique transactions (optionnel mais utile)
+    await client.query(
+      `INSERT INTO transactions (id_public_user, transaction_id, montant, statut)
+       VALUES ($1, $2, $3, $4)`,
+      [id_public_user, `INV-BUY-${Date.now()}`, prix, `Achat machine Invest #${machine_id}`]
+    );
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: "Machine achetée avec succès" });
+
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error("INVEST acheter error:", e);
+    res.status(500).json({ success: false, message: "Erreur serveur" });
+  } finally {
+    client.release();
+  }
+});
+
+
+app.get('/invest/mes-investissements/:id_public', async (req, res) => {
+  try {
+    const { id_public } = req.params;
+    const now = new Date();
+
+    const r = await pool.query(
+      `
+      SELECT ui.*, im.nom
+      FROM user_investments ui
+      JOIN invest_machines im ON im.id = ui.machine_id
+      WHERE ui.id_public_user = $1
+      ORDER BY ui.id DESC
+      `,
+      [id_public]
+    );
+
+    const items = r.rows.map(inv => {
+      const cyclesRestants = Math.max(0, parseInt(inv.duree_jours) - parseInt(inv.cycles_payes));
+      const claimable = Math.min(cyclesRestants, calcClaimableCycles(inv.last_claim_at, now));
+      return { ...inv, cycles_restants: cyclesRestants, cycles_reclamables: claimable };
+    });
+
+    res.json({ success: true, investments: items });
+  } catch (e) {
+    console.error("INVEST mes-investissements error:", e);
+    res.status(500).json({ success: false, message: "Erreur serveur" });
+  }
+});
+
+
+app.post('/invest/reclamer', async (req, res) => {
+  const { id_public_user, investment_id } = req.body;
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Verrouille l'invest
+    const invRes = await client.query(
+      `SELECT * FROM user_investments WHERE id = $1 AND id_public_user = $2 FOR UPDATE`,
+      [investment_id, id_public_user]
+    );
+    if (invRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: "Investissement introuvable" });
+    }
+
+    const inv = invRes.rows[0];
+    const now = new Date();
+
+    const cyclesRestants = Math.max(0, parseInt(inv.duree_jours) - parseInt(inv.cycles_payes));
+    const claimable = Math.min(cyclesRestants, calcClaimableCycles(inv.last_claim_at, now));
+
+    if (claimable <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, message: "Rien à réclamer pour le moment" });
+    }
+
+    const gainJour = parseFloat(inv.gain_jour);
+    const gainTotal = gainJour * claimable;
+
+    // Crédite le solde réel
+    await client.query(
+      'UPDATE utilisateurs SET balance = balance + $1 WHERE id_public = $2',
+      [gainTotal, id_public_user]
+    );
+
+    // Met à jour cycles + last_claim_at (+ claimable jours)
+    const newCycles = parseInt(inv.cycles_payes) + claimable;
+    const newLast = new Date(new Date(inv.last_claim_at).getTime() + claimable * MS_24H);
+
+    const statut = (newCycles >= parseInt(inv.duree_jours)) ? 'terminé' : 'en cours';
+
+    await client.query(
+      `UPDATE user_investments
+       SET cycles_payes = $1, last_claim_at = $2, statut = $3
+       WHERE id = $4`,
+      [newCycles, newLast, statut, investment_id]
+    );
+
+    // Historique
+    await client.query(
+      `INSERT INTO transactions (id_public_user, transaction_id, montant, statut)
+       VALUES ($1, $2, $3, $4)`,
+      [id_public_user, `INV-CLAIM-${Date.now()}`, gainTotal, `Gain Invest (${claimable} jours)`]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      message: `+${gainTotal} FCFA crédités (${claimable} cycles)`,
+      gain: gainTotal,
+      claimable
+    });
+
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error("INVEST reclamer error:", e);
+    res.status(500).json({ success: false, message: "Erreur serveur" });
+  } finally {
+    client.release();
+  }
+});
 
 
 
