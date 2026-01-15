@@ -702,10 +702,21 @@ function calcClaimableCycles(lastClaimAt, now) {
 app.get('/invest/machines', async (req, res) => {
   try {
     const r = await pool.query(`SELECT * FROM invest_machines WHERE actif = true ORDER BY prix ASC`);
-    res.json({ success: true, machines: r.rows });
+    return res.json({ success: true, machines: r.rows });
   } catch (e) {
-    console.error("INVEST machines error:", e);
-    res.status(500).json({ success: false, message: "Erreur serveur" });
+    console.error("❌ INVEST machines error:", e?.message);
+    console.error(e?.stack);
+
+    // debug rapide si tu appelles /invest/machines?debug=1
+    if (req.query.debug === "1") {
+      return res.status(500).json({
+        success: false,
+        message: "Erreur serveur",
+        debug: e?.message
+      });
+    }
+
+    return res.status(500).json({ success: false, message: "Erreur serveur" });
   }
 });
 
