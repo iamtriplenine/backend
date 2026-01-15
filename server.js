@@ -105,6 +105,7 @@ await pool.query(`
 
 
 // ✅ Seed d'une seule machine de test (si table vide)
+// ✅ Seed d'une seule machine de test (si table vide)
 const machineCount = await pool.query(`SELECT COUNT(*)::int as c FROM invest_machines`);
 if ((machineCount.rows[0]?.c || 0) === 0) {
   await pool.query(`
@@ -115,7 +116,6 @@ if ((machineCount.rows[0]?.c || 0) === 0) {
 } else {
   console.log("ℹ️ Invest: Machines déjà présentes, seed ignoré");
 }
-
 
 
 
