@@ -14,137 +14,125 @@ const pool = new Pool({
 });
 
 // --- INITIALISATION DES TABLES ET CONFIGURATION ---
+// --- INITIALISATION DES TABLES ET CONFIGURATION ---
 const initDB = async () => {
-    try {
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS utilisateurs (
-                id SERIAL PRIMARY KEY,
-                id_public VARCHAR(6) UNIQUE,
-                telephone VARCHAR(20) UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                username TEXT,
-                code_promo VARCHAR(4) UNIQUE,
-                parrain_code VARCHAR(4),
-                balance DECIMAL(15,2) DEFAULT 0,
-                message TEXT DEFAULT '',
-                dernier_code_utilise TEXT DEFAULT ''
-            );
-            CREATE TABLE IF NOT EXISTS transactions (
-                id SERIAL PRIMARY KEY,
-                id_public_user VARCHAR(6),
-                transaction_id TEXT UNIQUE,
-                montant DECIMAL(15,2),
-                statut TEXT DEFAULT 'en attente',
-                date_crea TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS config_globale (
-                cle TEXT PRIMARY KEY,
-                valeur TEXT,
-                montant DECIMAL(15,2)
-            );
-           
-        `);
-// 
-            // Ajoute la colonne pour stocker le minage (Mega Coins)
-await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
+  try {
+    // 1) Tables principales
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS utilisateurs (
+        id SERIAL PRIMARY KEY,
+        id_public VARCHAR(6) UNIQUE,
+        telephone VARCHAR(20) UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        username TEXT,
+        code_promo VARCHAR(4) UNIQUE,
+        parrain_code VARCHAR(4),
+        balance DECIMAL(15,2) DEFAULT 0,
+        message TEXT DEFAULT '',
+        dernier_code_utilise TEXT DEFAULT ''
+      );
 
+      CREATE TABLE IF NOT EXISTS transactions (
+        id SERIAL PRIMARY KEY,
+        id_public_user VARCHAR(6),
+        transaction_id TEXT UNIQUE,
+        montant DECIMAL(15,2),
+        statut TEXT DEFAULT 'en attente',
+        date_crea TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
 
+      CREATE TABLE IF NOT EXISTS config_globale (
+        cle TEXT PRIMARY KEY,
+        valeur TEXT,
+        montant DECIMAL(15,2)
+      );
+    `);
 
+    // 2) Colonnes / config
+    await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS mining_balance DECIMAL(15,2) DEFAULT 0;`);
+    await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS dernier_code_utilise TEXT DEFAULT '';`);
 
-      
-        // Mise à jour de la colonne pour la nouvelle logique (Code Unique au lieu de Date)
-        await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS dernier_code_utilise TEXT DEFAULT '';`);
-        // Initialisation du code par défaut si la table est vide
-        await pool.query(`INSERT INTO config_globale (cle, valeur, montant) VALUES ('code_journalier', 'MEGA2025', 50) ON CONFLICT DO NOTHING;`);
+    await pool.query(`
+      INSERT INTO config_globale (cle, valeur, montant)
+      VALUES ('code_journalier', 'MEGA2025', 50)
+      ON CONFLICT DO NOTHING;
+    `);
 
-       // --- INITIALISATION DU TAUX DE PARRAINAGE ---
-// Crée la variable dans la base de données avec 40% par défaut
-await pool.query(`INSERT INTO config_globale (cle, montant) VALUES ('pourcentage_parrain', 40) ON CONFLICT DO NOTHING;`);
+    await pool.query(`
+      INSERT INTO config_globale (cle, montant)
+      VALUES ('pourcentage_parrain', 40)
+      ON CONFLICT DO NOTHING;
+    `);
 
+    // ---------------------------------------------------------
+    // 3) SECTION INVEST (protégée : même si le reste plante)
+    // ---------------------------------------------------------
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS invest_machines (
+          id SERIAL PRIMARY KEY,
+          nom TEXT NOT NULL,
+          prix DECIMAL(15,2) NOT NULL,
+          gain_jour DECIMAL(15,2) NOT NULL,
+          duree_jours INT NOT NULL,
+          total_retour DECIMAL(15,2) NOT NULL,
+          actif BOOLEAN DEFAULT true
+        );
+      `);
 
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS user_investments (
+          id SERIAL PRIMARY KEY,
+          id_public_user VARCHAR(6) NOT NULL,
+          machine_id INT NOT NULL REFERENCES invest_machines(id),
+          prix DECIMAL(15,2) NOT NULL,
+          gain_jour DECIMAL(15,2) NOT NULL,
+          duree_jours INT NOT NULL,
+          total_retour DECIMAL(15,2) NOT NULL,
+          cycles_payes INT DEFAULT 0,
+          start_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          last_claim_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          statut TEXT DEFAULT 'en cours'
+        );
+      `);
 
+      // ✅ Seed d'une seule machine test (si table vide)
+      const machineCount = await pool.query(`SELECT COUNT(*)::int as c FROM invest_machines`);
+      if ((machineCount.rows[0]?.c || 0) === 0) {
+        await pool.query(`
+          INSERT INTO invest_machines (nom, prix, gain_jour, duree_jours, total_retour, actif)
+          VALUES ('Machine Test 1 000', 1000, 100, 15, 1500, true)
+        `);
+        console.log("✅ Invest: Machine test ajoutée");
+      } else {
+        console.log("ℹ️ Invest: Machines déjà présentes");
+      }
 
+      console.log("✅ INIT INVEST OK");
+    } catch (e) {
+      console.error("❌ INIT INVEST ERROR:", e?.message);
+      console.error(e?.stack);
+    }
 
+    // ---------------------------------------------------------
+    // 4) Wallet address (après Invest)
+    // ---------------------------------------------------------
+    await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS wallet_address TEXT UNIQUE;`);
 
-// --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
-// --- SECTION : INVEST (MACHINES) ---
-// Catalogue des machines
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS invest_machines (
-    id SERIAL PRIMARY KEY,
-    nom TEXT NOT NULL,
-    prix DECIMAL(15,2) NOT NULL,
-    gain_jour DECIMAL(15,2) NOT NULL,
-    duree_jours INT NOT NULL,
-    total_retour DECIMAL(15,2) NOT NULL,
-    actif BOOLEAN DEFAULT true
-  );
-`);
+    const anciens = await pool.query(`SELECT id_public FROM utilisateurs WHERE wallet_address IS NULL`);
+    for (let row of anciens.rows) {
+      const adr = '0x' + Math.random().toString(16).slice(2, 10).toUpperCase();
+      await pool.query(`UPDATE utilisateurs SET wallet_address = $1 WHERE id_public = $2`, [adr, row.id_public]);
+    }
 
-// Achats / cycles utilisateur
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS user_investments (
-    id SERIAL PRIMARY KEY,
-    id_public_user VARCHAR(6) NOT NULL,
-    machine_id INT NOT NULL REFERENCES invest_machines(id),
-    prix DECIMAL(15,2) NOT NULL,
-    gain_jour DECIMAL(15,2) NOT NULL,
-    duree_jours INT NOT NULL,
-    total_retour DECIMAL(15,2) NOT NULL,
-
-    cycles_payes INT DEFAULT 0,
-    start_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_claim_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    statut TEXT DEFAULT 'en cours' -- en cours | terminé
-  );
-`);
-
-// --- (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((----------------- ---
-
-
-
-// ✅ Seed d'une seule machine de test (si table vide)
-// ✅ Seed d'une seule machine de test (si table vide)
-const machineCount = await pool.query(`SELECT COUNT(*)::int as c FROM invest_machines`);
-if ((machineCount.rows[0]?.c || 0) === 0) {
-  await pool.query(`
-    INSERT INTO invest_machines (nom, prix, gain_jour, duree_jours, total_retour, actif)
-    VALUES ('Machine Test 1 000', 1000, 100, 15, 1500, true)
-  `);
-  console.log("✅ Invest: Machine de test ajoutée (1 000 → 100/j × 15j)");
-} else {
-  console.log("ℹ️ Invest: Machines déjà présentes, seed ignoré");
-}
-
-
-
-        
-
-
-
-
-
-// 1. On crée la colonne wallet_address pour tout le monde
-await pool.query(`ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS wallet_address TEXT UNIQUE;`);
-
-// 2. On donne une adresse aux anciens qui n'en ont pas encore
-const anciens = await pool.query(`SELECT id_public FROM utilisateurs WHERE wallet_address IS NULL`);
-for (let row of anciens.rows) {
-    const adr = '0x' + Math.random().toString(16).slice(2, 10).toUpperCase();
-    await pool.query(`UPDATE utilisateurs SET wallet_address = $1 WHERE id_public = $2`, [adr, row.id_public]);
-}
-
-
-
-
-           
-           
-      
-        console.log("✅ Serveur prêt et Base de données synchronisée");
-    } catch (err) { console.log("Erreur lors de l'initialisation:", err); }
+    console.log("✅ Serveur prêt et Base de données synchronisée");
+  } catch (err) {
+    console.error("❌ Erreur initDB:", err?.message);
+    console.error(err?.stack);
+  }
 };
 initDB();
+
 
 
 
