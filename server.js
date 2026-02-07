@@ -8,9 +8,13 @@ app.use(cors());
 app.use(express.json());
 
 // --- CONNEXION À LA BASE DE DONNÉES ---
+// --- CONNEXION À LA BASE DE DONNÉES (LIEN DIRECT) ---
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  // ICI : Remplace toute la ligne par ton lien Supabase entre guillemets
+  connectionString: "postgresql://postgres:Sign_of_angels9@db.hbvomziwlcdgutocucwg.supabase.co:5432/postgres",
+  ssl: { 
+    rejectUnauthorized: false 
+  }
 });
 
 // --- INITIALISATION DES TABLES ET CONFIGURATION ---
